@@ -67,9 +67,9 @@
         <source-file src="src/ios/OpenWithPlugin.m"/>
 
         <!-- Cordova hooks -->
-        <hook type="before_plugin_install" src="hooks/iosCopyShareExtension.js"/>
-        <hook type="after_plugin_install" src="hooks/iosAddTarget.js"/>
-        <hook type="before_plugin_uninstall" src="hooks/iosRemoveTarget.js"/>
+        <hook type="before_plugin_install" src="hooks/ios/copy-extension.js"/>
+        <hook type="after_plugin_install" src="hooks/ios/add-target.js"/>
+        <hook type="before_plugin_uninstall" src="hooks/ios/remove-target.js"/>
 
         <!-- Dependencies -->
         <framework src="MobileCoreServices.framework"/>
