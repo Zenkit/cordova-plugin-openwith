@@ -1,14 +1,15 @@
 # cordova-plugin-openwith
 
-<a href="https://fovea.cc"><img alt="Logo Fovea" src="https://fovea.cc/blog/wp-content/uploads/2017/09/fovea-logo-flat-128.png" height="50" /></a> &amp; <a href="https://www.interactivetools.com"><img alt="Logo InteractiveTools" src="https://www.interactivetools.com/assets/images/header/logo.png" height="59" /></a>
-
-[![standard-readme compliant](https://img.shields.io/badge/standard--readme-OK-green.svg?style=flat-square)](https://github.com/RichardLitt/standard-readme)
-
-> This plugin for [Apache Cordova](https://cordova.apache.org/) registers your app to handle certain types of files.
+> This plugin for [Apache Cordova](https://cordova.apache.org/) registers your app to handle files and text.
 
 ## Overview
 
-You'd like your app to be listed in the **Send to...** section for certain types of files, on both **Android** and **iOS**? This is THE plugin! No need to meddle into Android's manifests and iOS's plist files, it's (almost) all managed for you by a no brainer one liner installation command.
+This plugin lists your app in the **Send to...** section for files or text, on both **Android** and **iOS**.
+It is based on [`cc.fovea.cordova.openwith`](https://github.com/j3k0/cordova-plugin-openwith), but with less of a focus on _images_ and without any UI on iOS.
+
+:warning: **Work in progress
+This documentation isn't adjusted completely yet so take care when using this.
+Also we didn't focus on making this super configurable yet, so it is more adjusted to our needs.**
 
 ## Table of Contents
 
@@ -17,7 +18,6 @@ You'd like your app to be listed in the **Send to...** section for certain types
 - [Usage](#usage)
 - [API](#api)
 - [License](#license)
-
 
 ## Background
 
@@ -29,7 +29,7 @@ Below is a short introduction to how the technology works on Android and iOS.
 
 #### Android
 
-On Android, the app defines, in its __AndroidManifest.xml__ file, the **mime type** of file types it can handle. Wildcard are accepted, so `image/*` can be used to accept all images regardless of the sub-type. The app also defines the type of actions accepted for this file types. By default, only the [SEND](https://developer.android.com/reference/android/content/Intent.html#ACTION_SEND) event is declared by the plugin. Other events that can be of interest are `SEND_MULTIPLE` and `VIEW`.
+On Android, the app defines, in its **AndroidManifest.xml** file, the **mime type** of file types it can handle. Wildcard are accepted, so `image/*` can be used to accept all images regardless of the sub-type. The app also defines the type of actions accepted for this file types. By default, only the [SEND](https://developer.android.com/reference/android/content/Intent.html#ACTION_SEND) event is declared by the plugin. Other events that can be of interest are `SEND_MULTIPLE` and `VIEW`.
 
 When a user sends a file to your app, the system provides an [Intent](https://developer.android.com/reference/android/content/Intent.html) to the application. An Intent is just an abstract description of an operation to be performed. This Intent defines an action and can be linked with internal URIs to one or more files through the ["stream" property](https://developer.android.com/reference/android/content/Intent.html#EXTRA_STREAM) attached to the intent. Starting Android 4.4 KitKat, [ClipData](https://developer.android.com/reference/android/content/ClipData.html) was introduced to mimick a sort of Clipboard used to exchange data between apps. Both methods are supported.
 
@@ -51,101 +51,75 @@ On the Cordova App side, the plugin checks listens for app start or resume event
 
 ## Installation
 
-Here's the promised one liner:
-
-```
-cordova plugin add cc.fovea.cordova.openwith \
-  --variable ANDROID_MIME_TYPE="image/*" \
-  --variable IOS_URL_SCHEME=ccfoveaopenwithdemo \
-  --variable IOS_UNIFORM_TYPE_IDENTIFIER=public.image
+```sh
+cordova plugin add github:zenkit/cordova-plugin-openwith \
+  --variable IOS_URL_SCHEME=myuniqueopenwithdemo
 ```
 
-| variable | example | notes |
-|---|---|---|
-| `ANDROID_MIME_TYPE` | image/* | **Android only** Mime type of documents you want to share (wildcards accepted) |
-| `IOS_URL_SCHEME` | uniquelonglowercase | **iOS only** Any random long string of lowercase alphabetical characters |
-| `IOS_UNIFORM_TYPE_IDENTIFIER` | public.image | **iOS only** UTI of documents you want to share (check [Apple's System-Declared UTI](https://developer.apple.com/library/content/documentation/Miscellaneous/Reference/UTIRef/Articles/System-DeclaredUniformTypeIdentifiers.html#//apple_ref/doc/uid/TP40009259-SW1)) |
-| `IOS_GROUP_IDENTIFIER` | group.my.app.id | **iOS only** Custom app group name. Default is `group.<YOUR_APP_BUNDLE_ID>.shareextension`. |
-| `SHAREEXT_PROVISIONING_PROFILE` | 9dfsdf-.... | **iOS only** Developer account teamId |
-| `SHAREEXT_DEVELOPMENT_TEAM` | 00B000A09l | **iOS only** UUID of provisioning profile for singing |
-
-It shouldn't be too hard. But just in case, I [posted a screencast of it](https://youtu.be/eaE4m_xO1mg).
+| variable                        | example             | notes                                                                                                                                                                                                                                                                  |
+| ------------------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ANDROID_MIME_TYPE`             | image/\*            | **Android only** Mime type of documents you want to share (wildcards accepted)                                                                                                                                                                                         |
+| `IOS_URL_SCHEME`                | uniquelonglowercase | **iOS only** Any random long string of lowercase alphabetical characters                                                                                                                                                                                               |
+| `IOS_UNIFORM_TYPE_IDENTIFIER`   | public.image        | **iOS only** UTI of documents you want to share (check [Apple's System-Declared UTI](https://developer.apple.com/library/content/documentation/Miscellaneous/Reference/UTIRef/Articles/System-DeclaredUniformTypeIdentifiers.html#//apple_ref/doc/uid/TP40009259-SW1)) |
+| `IOS_GROUP_IDENTIFIER`          | group.my.app.id     | **iOS only** Custom app group name. Default is `group.<YOUR_APP_BUNDLE_ID>.shareextension`.                                                                                                                                                                            |
+| `SHAREEXT_PROVISIONING_PROFILE` | 9dfsdf-....         | **iOS only** Developer account teamId                                                                                                                                                                                                                                  |
+| `SHAREEXT_DEVELOPMENT_TEAM`     | 00B000A09l          | **iOS only** UUID of provisioning profile for singing                                                                                                                                                                                                                  |
 
 ### iOS Setup
 
 After having installed the plugin, with the ios platform in place, 1 operation needs to be done manually: setup the App Group on both the Cordova App and the Share Extension.
 
- 1. open the **xcodeproject** for your application
- 1. select the root element of your **project navigator** (the left-side pane)
- 1. select the **target** of your application
- 1. select **capabilities**
- 1. scroll down to **App Groups**
- 1. make sure it's **ON**
- 1. create and activate an **App Group** called: `group.<YOUR_APP_BUNDLE_ID>.shareextension`
- 1. repeat the previous five steps for the **ShareExtension target**.
+1.  Open the **xcodeproject** for your application
+2.  Select the root element of your **project navigator** (the left-side pane)
+3.  Select the **target** of your application
+4.  Select **capabilities**
+5.  Scroll down to **App Groups**
+6.  Make sure it's **ON**
+7.  Create and activate an **App Group** called: `group.<YOUR_APP_BUNDLE_ID>.shareextension`
+8.  Repeat the previous five steps for the **ShareExtension target**.
 
 You might also have to select a Team for both the App and Share Extension targets, make sure to select the same.
 
 Build, XCode might complain about a few things to setup that it will fix for you (creation entitlements files, etc).
 
-### Advanced installation options
-
-If you do not need anything fancy, you can skip this section.
-
-**Android: accept extra actions**
-
-On Android, you can define more supported actions (see the "Background" section above to learn more about this).
-
-Use the `ANDROID_EXTRA_ACTIONS` to accept additional actions. The variable should contain one or more valid XML action-elements. Example:
-
-```
-MY_EXTRA_ACTIONS='<action android:name="android.intent.action.VIEW" />'
-cordova plugin add cc.fovea.cordova.openwith \
-  --variable ANDROID_MIME_TYPE="image/*" \
-  --variable "ANDROID_EXTRA_ACTIONS=$MY_EXTRA_ACTIONS"
-```
-
-To specify more than one extra action, just put them all in the `ANDROID_EXTRA_ACTIONS`:
-
-```
-MY_EXTRA_ACTIONS='<action ... /><action ... />'
-```
-
 ## Usage
 
 ```js
-document.addEventListener('deviceready', setupOpenwith, false);
+document.addEventListener("deviceready", setupOpenwith, false);
 
 function setupOpenwith() {
-
   // Increase verbosity if you need more logs
   //cordova.openwith.setVerbosity(cordova.openwith.DEBUG);
 
   // Initialize the plugin
   cordova.openwith.init(initSuccess, initError);
 
-  function initSuccess()  { console.log('init success!'); }
-  function initError(err) { console.log('init failed: ' + err); }
+  function initSuccess() {
+    console.log("init success!");
+  }
+  function initError(err) {
+    console.log("init failed: " + err);
+  }
 
   // Define your file handler
   cordova.openwith.addHandler(myHandler);
 
   function myHandler(intent) {
-    console.log('intent received');
+    console.log("intent received");
 
-    console.log('  action: ' + intent.action); // type of action requested by the user
-    console.log('  exit: ' + intent.exit); // if true, you should exit the app after processing
+    console.log("  action: " + intent.action); // type of action requested by the user
+    console.log("  exit: " + intent.exit); // if true, you should exit the app after processing
 
     for (var i = 0; i < intent.items.length; ++i) {
       var item = intent.items[i];
-      console.log('  type: ', item.type);   // mime type
-      console.log('  uri:  ', item.uri);     // uri to the file, probably NOT a web uri
+      console.log("  type: ", item.type); // mime type
+      console.log("  uri:  ", item.uri); // uri to the file, probably NOT a web uri
 
       // some optional additional info
-      console.log('  text: ', item.text);   // text to share alongside the item, iOS only
-      console.log('  name: ', item.name);   // suggested name of the image, iOS 11+ only
-      console.log('  utis: ', item.utis);
-      console.log('  path: ', item.path);   // path on the device, generally undefined
+      console.log("  text: ", item.text); // text to share alongside the item, iOS only
+      console.log("  name: ", item.name); // suggested name of the image, iOS 11+ only
+      console.log("  utis: ", item.utis);
+      console.log("  path: ", item.path); // path on the device, generally undefined
     }
 
     // ...
@@ -155,7 +129,6 @@ function setupOpenwith() {
 
     if (intent.items.length > 0) {
       cordova.openwith.load(intent.items[0], function(data, item) {
-
         // data is a long base64 string with the content of the file
         console.log("the item weights " + data.length + " bytes");
         uploadToServer(item);
@@ -163,11 +136,14 @@ function setupOpenwith() {
         // "exit" when done.
         // Note that there is no need to wait for the upload to finish,
         // the app can continue while in background.
-        if (intent.exit) { cordova.openwith.exit(); }
+        if (intent.exit) {
+          cordova.openwith.exit();
+        }
       });
-    }
-    else {
-      if (intent.exit) { cordova.openwith.exit(); }
+    } else {
+      if (intent.exit) {
+        cordova.openwith.exit();
+      }
     }
   }
 }
@@ -183,10 +159,10 @@ Change the verbosity level of the plugin.
 
 `level` can be set to:
 
- - `cordova.openwith.DEBUG` for maximal verbosity, log everything.
- - `cordova.openwith.INFO` for the default verbosity, log interesting stuff only.
- - `cordova.openwith.WARN` for low verbosity, log only warnings and errors.
- - `cordova.openwith.ERROR` for minimal verbosity, log only errors.
+- `cordova.openwith.DEBUG` for maximal verbosity, log everything.
+- `cordova.openwith.INFO` for the default verbosity, log interesting stuff only.
+- `cordova.openwith.WARN` for low verbosity, log only warnings and errors.
+- `cordova.openwith.ERROR` for minimal verbosity, log only errors.
 
 ### cordova.openwith.addHandler(handlerFunction)
 
@@ -200,30 +176,30 @@ The signature for the handler function is `function handlerFunction(intent)`. Se
 
 `intent` describe the operation to perform, toghether with the associated data. It has the following fields:
 
- - `action`: the desired action. see below for possible values.
- - `exit`: true if the app should exit after processing.
- - `items`: an array containing one or more data descriptor.
+- `action`: the desired action. see below for possible values.
+- `exit`: true if the app should exit after processing.
+- `items`: an array containing one or more data descriptor.
 
 **Action**
 
 Here are the possible actions.
 
- - `cordova.openwith.SEND`: when the user wants to send the file(s)
- - `cordova.openwith.VIEW`: when the user wants to view the file(s)
+- `cordova.openwith.SEND`: when the user wants to send the file(s)
+- `cordova.openwith.VIEW`: when the user wants to view the file(s)
 
 **Data descriptor**
 
 A data descriptor describe one file. It is a javascript object with the following fields:
 
- - `uri`: uri to the file.
-   - _probably NOT a web uri, use `load()` if you want the data from this uri._
- - `type`: the mime type.
- - `text`: text entered by the user when sharing (**iOS only**)
- - `name`: suggested file name, generally undefined.
- - `path`: path on the device, generally undefined.
- - `utis`: list of UTIs the file belongs to (**iOS only**).
- - `base64`: a long base64 string with the content of the file.
-   - _might be undefined until `load()` has been called and completed successfully._
+- `uri`: uri to the file.
+  - _probably NOT a web uri, use `load()` if you want the data from this uri._
+- `type`: the mime type.
+- `text`: text entered by the user when sharing (**iOS only**)
+- `name`: suggested file name, generally undefined.
+- `path`: path on the device, generally undefined.
+- `utis`: list of UTIs the file belongs to (**iOS only**).
+- `base64`: a long base64 string with the content of the file.
+  - _might be undefined until `load()` has been called and completed successfully._
 
 ### cordova.openwith.load(dataDescriptor, loadSuccessCallback, loadErrorCallback)
 
@@ -251,13 +227,6 @@ that he can now safely go back to what he was doing.
 
 On Android, the app will be backgrounded no matter what.
 
-## Contribute
-
-Contributions in the form of GitHub pull requests are welcome. Please adhere to the following guidelines:
-  - Before embarking on a significant change, please create an issue to discuss the proposed change and ensure that it is likely to be merged.
-  - Follow the coding conventions used throughout the project. Many conventions are enforced using eslint and pmd. Run `npm t` to make sure of that.
-  - Any contributions must be licensed under the MIT license.
-
 ## License
 
-[MIT](./LICENSE) © Fovea.cc
+[MIT](./LICENSE)
