@@ -2,16 +2,17 @@ package com.zenkit.cordova.openwith;
 
 import android.content.ContentResolver;
 import android.content.Intent;
-import android.net.Uri;
 import android.util.Log;
-import java.util.Arrays;
-import java.util.ArrayList;
+
 import org.apache.cordova.CallbackContext;
 import org.apache.cordova.CordovaPlugin;
 import org.apache.cordova.PluginResult;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+
+import java.util.ArrayList;
+import java.util.Arrays;
 
 // This is the entry point of the openwith plugin
 public class OpenWithPlugin extends CordovaPlugin {
@@ -30,14 +31,28 @@ public class OpenWithPlugin extends CordovaPlugin {
 
     // Current verbosity level, changed with setVerbosity
     private int verbosity = INFO;
+    // Callback to the javascript onNewFile method
+    private CallbackContext handlerContext;
+    // Callback to the javascript logger method
+    private CallbackContext loggerContext;
+    // Intents added before the handler has been registered
+    private ArrayList pendingIntents = new ArrayList();
 
     // Log to the console if verbosity level is greater or equal to level
     private void log(final int level, final String message) {
-        switch(level) {
-            case DEBUG: Log.d(PLUGIN_NAME, message); break;
-            case INFO: Log.i(PLUGIN_NAME, message); break;
-            case WARN: Log.w(PLUGIN_NAME, message); break;
-            case ERROR: Log.e(PLUGIN_NAME, message); break;
+        switch (level) {
+            case DEBUG:
+                Log.d(PLUGIN_NAME, message);
+                break;
+            case INFO:
+                Log.i(PLUGIN_NAME, message);
+                break;
+            case WARN:
+                Log.w(PLUGIN_NAME, message);
+                break;
+            case ERROR:
+                Log.e(PLUGIN_NAME, message);
+                break;
         }
         if (level >= verbosity && loggerContext != null) {
             final PluginResult result = new PluginResult(
@@ -48,19 +63,75 @@ public class OpenWithPlugin extends CordovaPlugin {
         }
     }
 
-    // Callback to the javascript onNewFile method
-    private CallbackContext handlerContext;
+    // For now this only supports the SEND events
+    private Boolean shouldConvertIntent(final Intent intent) {
+        String action = intent.getAction();
 
-    // Callback to the javascript logger method
-    private CallbackContext loggerContext;
+        if (Intent.ACTION_SEND.equals(action)) {
+            return true;
+        }
 
-    // Intents added before the handler has been registered
-    private ArrayList pendingIntents = new ArrayList();
+        if (Intent.ACTION_SEND_MULTIPLE.equals(action)) {
+            return true;
+        }
 
-    //Called when the WebView does a top-level navigation or refreshes.
+        return false;
+    }
+
+    // Converts an intent to JSON
+    private JSONObject convertIntentToJSON(final Intent intent) {
+        try {
+            final ContentResolver contentResolver = this.cordova
+                    .getActivity().getApplicationContext().getContentResolver();
+
+            return Serializer.convertIntentToJSON(intent, contentResolver);
+        } catch (JSONException e) {
+            log(ERROR, "Error converting intent to JSON: " + e.getMessage());
+            log(ERROR, Arrays.toString(e.getStackTrace()));
+            return null;
+        }
+    }
+
+    // Calls the javascript intent handlers.
+    private void sendIntentToJavascript(final JSONObject intent) {
+        final PluginResult result = new PluginResult(PluginResult.Status.OK, intent);
+        result.setKeepCallback(true);
+        handlerContext.sendPluginResult(result);
+    }
+
+    // When the handler is defined, call it with all attached files.
+    private void processPendingIntents() {
+        log(DEBUG, "processPendingIntents()");
+        if (handlerContext == null) {
+            return;
+        }
+
+        for (int i = 0; i < pendingIntents.size(); i++) {
+            sendIntentToJavascript((JSONObject) pendingIntents.get(i));
+        }
+        pendingIntents.clear();
+    }
+
+    // This is called when a new intent is sent while the app is already opened.
+    // We also call it manually with the cordova application intent when the plugin
+    // is initialized (so all intents will be managed by this method).
+    @Override
+    public void onNewIntent(final Intent intent) {
+        log(DEBUG, "onNewIntent() " + intent.getAction());
+
+        if (shouldConvertIntent(intent)) {
+            final JSONObject json = convertIntentToJSON(intent);
+            if (json != null) {
+                pendingIntents.add(json);
+            }
+        }
+
+        processPendingIntents();
+    }
+
+    // Called when the WebView does a top-level navigation or refreshes.
     // Plugins should stop any long-running processes and clean up internal state.
     // Does nothing by default.
-
     @Override
     public void onReset() {
         verbosity = INFO;
@@ -74,17 +145,13 @@ public class OpenWithPlugin extends CordovaPlugin {
         log(DEBUG, "execute() called with action:" + action + " and options: " + data);
         if ("setVerbosity".equals(action)) {
             return setVerbosity(data, callbackContext);
-        }
-        else if ("init".equals(action)) {
+        } else if ("init".equals(action)) {
             return init(data, callbackContext);
-        }
-        else if ("setHandler".equals(action)) {
+        } else if ("setHandler".equals(action)) {
             return setHandler(data, callbackContext);
-        }
-        else if ("setLogger".equals(action)) {
+        } else if ("setLogger".equals(action)) {
             return setLogger(data, callbackContext);
-        }
-        else if ("exit".equals(action)) {
+        } else if ("exit".equals(action)) {
             return exit(data, callbackContext);
         }
         log(DEBUG, "execute() did not recognize this action: " + action);
@@ -101,8 +168,7 @@ public class OpenWithPlugin extends CordovaPlugin {
             verbosity = data.getInt(0);
             log(DEBUG, "setVerbosity() -> ok");
             return PluginResultSender.ok(context);
-        }
-        catch (JSONException ex) {
+        } catch (JSONException ex) {
             log(WARN, "setVerbosity() -> invalidAction");
             return false;
         }
@@ -152,55 +218,5 @@ public class OpenWithPlugin extends CordovaPlugin {
         loggerContext = context;
         log(DEBUG, "setLogger() -> ok");
         return PluginResultSender.noResult(context, true);
-    }
-
-    // This is called when a new intent is sent while the app is already opened.
-    // We also call it manually with the cordova application intent when the plugin
-    // is initialized (so all intents will be managed by this method).
-    @Override
-    public void onNewIntent(final Intent intent) {
-        String action = intent.getAction();
-        if (Intent.ACTION_MAIN.equals(action)) {
-            return;
-        }
-
-        log(DEBUG, "onNewIntent() " + action);
-        final JSONObject json = convertIntentToJSON(intent);
-        if (json != null) {
-            pendingIntents.add(json);
-        }
-        processPendingIntents();
-    }
-
-    // When the handler is defined, call it with all attached files.
-    private void processPendingIntents() {
-        log(DEBUG, "processPendingIntents()");
-        if (handlerContext == null) {
-            return;
-        }
-        for (int i = 0; i < pendingIntents.size(); i++) {
-            sendIntentToJavascript((JSONObject) pendingIntents.get(i));
-        }
-        pendingIntents.clear();
-    }
-
-    // Calls the javascript intent handlers.
-    private void sendIntentToJavascript(final JSONObject intent) {
-        final PluginResult result = new PluginResult(PluginResult.Status.OK, intent);
-        result.setKeepCallback(true);
-        handlerContext.sendPluginResult(result);
-    }
-
-    // Converts an intent to JSON
-    private JSONObject convertIntentToJSON(final Intent intent) {
-        try {
-            final ContentResolver contentResolver = this.cordova
-                .getActivity().getApplicationContext().getContentResolver();
-            return Serializer.convertIntentToJSON(contentResolver, intent);
-        } catch (JSONException e) {
-            log(ERROR, "Error converting intent to JSON: " + e.getMessage());
-            log(ERROR, Arrays.toString(e.getStackTrace()));
-            return null;
-        }
     }
 }

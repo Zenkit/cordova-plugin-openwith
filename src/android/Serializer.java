@@ -8,46 +8,156 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.MediaStore;
-import android.util.Base64;
-import java.io.IOException;
-import java.io.InputStream;
+
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.util.ArrayList;
+
 // Handle serialization of Android objects ready to be sent to javascript.
 class Serializer {
+    private static Boolean isEmpty(JSONArray array) {
+        return array == null || array.length() < 1;
+    }
 
-    // Convert an intent to JSON.
-    // This actually only exports stuff necessary to see file content
-    // (streams or clip data) sent with the intent.
-    // If none are specified, null is return.
-    public static JSONObject convertIntentToJSON(
-            final ContentResolver contentResolver,
-            final Intent intent)
-            throws JSONException {
-        JSONArray items = null;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-            items = Serializer.itemsFromClipData(contentResolver, intent.getClipData());
+    private static String getFileNameFromUri(Uri uri, ContentResolver resolver) {
+        String[] projection = {MediaStore.MediaColumns.DISPLAY_NAME};
+        Cursor cursor = resolver.query(uri, projection, null, null, null);
+
+        if (cursor != null) {
+            try {
+                if (cursor.moveToFirst()) {
+                    int index = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME);
+                    return cursor.getString(index);
+                }
+            } finally {
+                cursor.close();
+            }
         }
-        if (items == null || items.length() == 0) {
-            items = Serializer.itemsFromExtras(contentResolver, intent);
-        }
-        if (items == null || items.length() == 0) {
-            items = Serializer.itemsFromData(contentResolver, intent.getData());
-        }
-        if (items == null) {
+
+        return null;
+    }
+
+    private static JSONObject buildTextItem(String text) throws JSONException {
+        if (text == null) {
             return null;
         }
 
-        final JSONObject action = new JSONObject();
-        action.put("action", Serializer.translateAction(intent.getAction()));
-        action.put("exit", Serializer.readExitOnSent(intent.getExtras()));
-        action.put("items", items);
-        return action;
+        JSONObject item = new JSONObject();
+        item.put("text", text);
+        return item;
     }
 
-    public static String translateAction(final String action) {
+    private static JSONObject buildFileItem(Uri uri, ContentResolver resolver) throws JSONException {
+        if (uri == null) {
+            return null;
+        }
+
+        JSONObject item = new JSONObject();
+        item.put("uri", uri);
+        item.put("type", resolver.getType(uri));
+        item.put("name", Serializer.getFileNameFromUri(uri, resolver));
+        return item;
+    }
+
+    // Extract the list of items from the intent's extra.
+    public static JSONArray itemsFromExtras(Intent intent, ContentResolver resolver) throws JSONException {
+
+        Bundle extras = intent.getExtras();
+        if (extras.isEmpty()) {
+            return null;
+        }
+
+        JSONArray items = new JSONArray();
+        // The extra doesn't contain any files => handle as text
+        if (extras.hasFileDescriptors() == false) {
+            String text = intent.getStringExtra(Intent.EXTRA_TEXT);
+
+            // Handle subjects, e.g. used when sharing websites from chrome
+            if (intent.hasExtra(Intent.EXTRA_SUBJECT)) {
+                String otherText = text;
+                String delimiter = "\n";
+                String subject = intent.getStringExtra(Intent.EXTRA_SUBJECT);
+                text = subject;
+                if (otherText != null && otherText.isEmpty() == false) {
+                    text += delimiter + otherText;
+                }
+            }
+
+            final JSONObject item = buildTextItem(text);
+            if (item != null) {
+                items.put(item);
+            }
+            return items;
+        }
+
+        ArrayList<Uri> uris = new ArrayList<>();
+        if (Intent.ACTION_SEND_MULTIPLE.equals(intent.getAction())) {
+            uris = extras.getParcelableArrayList(Intent.EXTRA_STREAM);
+        } else {
+            Uri uri = extras.getParcelable(Intent.EXTRA_STREAM);
+            if (uri != null) {
+                uris.add(uri);
+            }
+        }
+
+        for (int i = 0; i < uris.size(); i++) {
+            final JSONObject item = Serializer.buildFileItem(uris.get(i), resolver);
+            if (item != null) {
+                items.put(item);
+            }
+        }
+
+        return items;
+    }
+
+    // Extract the list of items from clip data (if available).
+    public static JSONArray itemsFromClipData(Intent intent, ContentResolver resolver) throws JSONException {
+
+        ClipData clipData = intent.getClipData();
+        if (clipData == null) {
+            return null;
+        }
+
+        JSONArray items = new JSONArray();
+        for (int i = 0; i < clipData.getItemCount(); i++) {
+            ClipData.Item clipItem = clipData.getItemAt(i);
+            String text = (String) clipItem.getText();
+
+            JSONObject textItem = buildTextItem(text);
+            if (textItem != null) {
+                items.put(textItem);
+                continue;
+            }
+
+            Uri uri = clipItem.getUri();
+            JSONObject fileItem = buildFileItem(uri, resolver);
+            if (fileItem != null) {
+                items.put(fileItem);
+            }
+        }
+
+        return items;
+    }
+
+    // Extract the list of items from the intent's getData
+    // See Intent.ACTION_VIEW for details.
+    public static JSONArray itemsFromData(Intent intent, ContentResolver resolver) throws JSONException {
+
+        Uri uri = intent.getData();
+        JSONArray items = new JSONArray();
+        JSONObject item = buildFileItem(uri, resolver);
+        if (item != null) {
+            items.put(item);
+        }
+
+        return items;
+    }
+
+
+    private static String translateAction(Intent intent) {
+        String action = intent.getAction();
         if (Intent.ACTION_SEND.equals(action) || Intent.ACTION_SEND_MULTIPLE.equals(action)) {
             return "SEND";
         } else if (Intent.ACTION_VIEW.equals(action)) {
@@ -58,156 +168,42 @@ class Serializer {
 
     // Read the value of "exit_on_sent" in the intent's extra.
     // Defaults to false.
-    public static boolean readExitOnSent(final Bundle extras) {
+    private static boolean shouldExitOnSent(Intent intent) {
+        Bundle extras = intent.getExtras();
         if (extras == null) {
             return false;
         }
         return extras.getBoolean("exit_on_sent", false);
     }
 
-    // Extract the list of items from clip data (if available).
-    // Defaults to null.
-    public static JSONArray itemsFromClipData(
-            final ContentResolver contentResolver,
-            final ClipData clipData)
-            throws JSONException {
-        if (clipData == null) {
-            return null;
-        }
-
-        final int clipItemCount = clipData.getItemCount();
-        JSONArray items = new JSONArray();
-        for (int i = 0; i < clipItemCount; i++) {
-            ClipData.Item item = clipData.getItemAt(i);
-            Uri uri = item.getUri();
-            String text = (String) item.getText();
-            JSONObject json = buildJSONItem(contentResolver, uri, text);
-            if (json != null) {
-                items.put(json);
-            }
-        }
-
-        return items;
-    }
-
-    // Extract the list of items from the intent's extra stream.
-    // See Intent.EXTRA_STREAM for details.
-    public static JSONArray itemsFromExtras(
-            final ContentResolver contentResolver,
-            final Intent intent)
-            throws JSONException {
+    // Convert an intent to JSON.
+    // 1. Check the extras this will handle most cases
+    // 2. If the extras are empty try to get the clip data
+    // 3. If there are still no items we fallback to data
+    public static JSONObject convertIntentToJSON(Intent intent, ContentResolver resolver) throws JSONException {
         if (intent == null) {
             return null;
         }
 
-        String type = intent.getType();
-        if ("text/plain".equals(type)) {
-            String text = intent.getStringExtra(Intent.EXTRA_TEXT);
-            if (text != null) {
-                final JSONObject item = Serializer.buildJSONItem(contentResolver, null, text);
-                if (item != null) {
-                    JSONArray items = new JSONArray();
-                    items.put(item);
-                    return items;
-                }
-            }
+        JSONArray items = itemsFromExtras(intent, resolver);
+
+        Boolean isClipDataSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT;
+        if (isClipDataSupported && isEmpty(items)) {
+            items = itemsFromClipData(intent, resolver);
         }
 
-        Bundle extras = intent.getExtras();
-        if (extras == null) {
+        if (isEmpty(items)) {
+            items = itemsFromData(intent, resolver);
+        }
+
+        if (isEmpty(items)) {
             return null;
         }
 
-        Uri uri = (Uri) extras.get(Intent.EXTRA_STREAM);
-        final JSONObject item = Serializer.buildJSONItem(contentResolver, uri, null);
-        if (item == null) {
-            return null;
-        }
-
-        JSONArray items = new JSONArray();
-        items.put(item);
-        return items;
-    }
-
-    // Extract the list of items from the intent's getData
-    // See Intent.ACTION_VIEW for details.
-    public static JSONArray itemsFromData(
-            final ContentResolver contentResolver,
-            final Uri uri)
-            throws JSONException {
-        if (uri == null) {
-            return null;
-        }
-
-        final JSONObject item = Serializer.buildJSONItem(contentResolver, uri, null);
-        if (item == null) {
-            return null;
-        }
-
-        JSONArray items = new JSONArray();
-        items.put(item);
-        return items;
-    }
-
-    // Convert an Uri and Text to JSON object.
-    // Object will include:
-    //     "text" content, if applicable.
-    //     "uri"  of the file, if applicable.
-    //     "type" of the file, if applicable.
-    //     "path" to the file, if applicable.
-    //     "name" of the file, if applicable.
-    public static JSONObject buildJSONItem(
-            final ContentResolver contentResolver,
-            final Uri uri,
-            final String text)
-            throws JSONException {
-        if (uri == null && text == null) {
-            return null;
-        }
-
-        final JSONObject json = new JSONObject();
-        json.put("text", text);
-        json.put("uri", uri);
-        if (uri != null) {
-            json.put("type", contentResolver.getType(uri));
-            json.put("path", Serializer.getRealPathFromURI(contentResolver, uri));
-            json.put("name", Serializer.getNameFromUri(contentResolver, uri));
-        }
+        JSONObject json = new JSONObject();
+        json.put("action", translateAction(intent));
+        json.put("exit", shouldExitOnSent(intent));
+        json.put("items", items);
         return json;
-    }
-
-    // Convert the Uri to the direct file system path of the image file.
-    public static String getRealPathFromURI(ContentResolver contentResolver, Uri uri) {
-        String[] projection = { MediaStore.Images.Media.DATA };
-        Cursor metaCursor = contentResolver.query(uri, projection, null, null, null);
-
-        if (metaCursor != null) {
-            try {
-                if (metaCursor.moveToFirst()) {
-                    return metaCursor.getString(0);
-                }
-            } finally {
-                metaCursor.close();
-            }
-        }
-
-        return null;
-    }
-
-    public static String getNameFromUri (ContentResolver contentResolver, Uri uri) {
-        String[] projection = { MediaStore.MediaColumns.DISPLAY_NAME };
-        Cursor metaCursor = contentResolver.query(uri, projection, null, null, null);
-
-        if (metaCursor != null) {
-            try {
-                if (metaCursor.moveToFirst()) {
-                    return metaCursor.getString(0);
-                }
-            } finally {
-                metaCursor.close();
-            }
-        }
-
-        return null;
     }
 }

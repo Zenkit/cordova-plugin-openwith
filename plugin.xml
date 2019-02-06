@@ -29,7 +29,7 @@
                 <!-- See https://developer.android.com/guide/topics/manifest/data-element.html -->
                 <data android:mimeType="$ANDROID_MIME_TYPE"/>
                 <action android:name="android.intent.action.SEND"/>
-                <!-- <action android:name="android.intent.action.SEND_MULTIPLE" /> -->
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
                 <category android:name="android.intent.category.DEFAULT"/>
             </intent-filter>
         </config-file>
