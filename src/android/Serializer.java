@@ -8,6 +8,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.MediaStore;
+import android.text.TextUtils;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -57,55 +58,51 @@ class Serializer {
         JSONObject item = new JSONObject();
         item.put("uri", uri);
         item.put("type", resolver.getType(uri));
-        item.put("name", Serializer.getFileNameFromUri(uri, resolver));
+        item.put("name", getFileNameFromUri(uri, resolver));
         return item;
     }
 
     // Extract the list of items from the intent's extra.
     public static JSONArray itemsFromExtras(Intent intent, ContentResolver resolver) throws JSONException {
-
-        Bundle extras = intent.getExtras();
-        if (extras.isEmpty()) {
-            return null;
-        }
-
         JSONArray items = new JSONArray();
-        // The extra doesn't contain any files => handle as text
-        if (extras.hasFileDescriptors() == false) {
-            String text = intent.getStringExtra(Intent.EXTRA_TEXT);
 
-            // Handle subjects, e.g. used when sharing websites from chrome
-            if (intent.hasExtra(Intent.EXTRA_SUBJECT)) {
-                String otherText = text;
-                String delimiter = "\n";
-                String subject = intent.getStringExtra(Intent.EXTRA_SUBJECT);
-                text = subject;
-                if (otherText != null && otherText.isEmpty() == false) {
-                    text += delimiter + otherText;
-                }
+        ArrayList<String> texts = new ArrayList<>();
+        if (intent.hasExtra(Intent.EXTRA_SUBJECT)) {
+            String subject = intent.getStringExtra(Intent.EXTRA_SUBJECT);
+            if (subject.isEmpty() == false) {
+                texts.add(subject);
             }
-
-            final JSONObject item = buildTextItem(text);
+        }
+        if (intent.hasExtra(Intent.EXTRA_TEXT)) {
+            String text = intent.getStringExtra(Intent.EXTRA_TEXT);
+            if (text.isEmpty() == false) {
+                texts.add(text);
+            }
+        }
+        if (texts.isEmpty() == false) {
+            final JSONObject item = buildTextItem(TextUtils.join("\n", texts));
             if (item != null) {
                 items.put(item);
             }
-            return items;
         }
 
         ArrayList<Uri> uris = new ArrayList<>();
-        if (Intent.ACTION_SEND_MULTIPLE.equals(intent.getAction())) {
-            uris = extras.getParcelableArrayList(Intent.EXTRA_STREAM);
-        } else {
-            Uri uri = extras.getParcelable(Intent.EXTRA_STREAM);
-            if (uri != null) {
-                uris.add(uri);
+        if (intent.hasExtra(Intent.EXTRA_STREAM)) {
+            if (Intent.ACTION_SEND_MULTIPLE.equals(intent.getAction())) {
+               uris = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+            } else {
+                Uri uri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+                if (uri != null) {
+                    uris.add(uri);
+                }
             }
         }
-
-        for (int i = 0; i < uris.size(); i++) {
-            final JSONObject item = Serializer.buildFileItem(uris.get(i), resolver);
-            if (item != null) {
-                items.put(item);
+        if (uris.isEmpty() == false) {
+            for (Uri uri : uris) {
+                final JSONObject item = buildFileItem(uri, resolver);
+                if (item != null) {
+                    items.put(item);
+                }
             }
         }
 
