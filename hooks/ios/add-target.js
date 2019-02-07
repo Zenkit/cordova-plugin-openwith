@@ -46,8 +46,7 @@ const getPreferences = function(context, configXML, projectName) {
             return plist.parse(data);
         })
         .then(plist => {
-            const group = 'group.' + plist.CFBundleIdentifier + BUNDLE_SUFFIX;
-
+            const BUNDLE_IDENTIFIER = plist.CFBundleIdentifier + BUNDLE_SUFFIX;
             return [
                 {
                     key: '__DISPLAY_NAME__',
@@ -55,11 +54,11 @@ const getPreferences = function(context, configXML, projectName) {
                 },
                 {
                     key: '__BUNDLE_IDENTIFIER__',
-                    value: plist.CFBundleIdentifier + BUNDLE_SUFFIX,
+                    value: BUNDLE_IDENTIFIER,
                 },
                 {
                     key: '__GROUP_IDENTIFIER__',
-                    value: group,
+                    value: 'group.' + BUNDLE_IDENTIFIER,
                 },
                 {
                     key: '__BUNDLE_SHORT_VERSION_STRING__',
@@ -75,7 +74,7 @@ const getPreferences = function(context, configXML, projectName) {
                 },
                 {
                     key: '__UNIFORM_TYPE_IDENTIFIER__',
-                    value: getCordovaParameter(configXML, 'IOS_UNIFORM_TYPE_IDENTIFIER'),
+                    value: getCordovaParameter(configXML, 'IOS_UNIFORM_TYPE_IDENTIFIER') || 'public.data',
                 },
             ];
         });

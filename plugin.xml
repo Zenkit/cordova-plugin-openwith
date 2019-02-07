@@ -64,6 +64,20 @@
             </array>
         </config-file>
 
+        <!-- Entitlements (Debug) -->
+        <config-file target="*-Debug.plist" parent="com.apple.security.application-groups">
+            <array>
+                <string>group.$(CFBundleIdentifier).shareextension</string>
+            </array>
+        </config-file>
+
+        <!-- Entitlements (Release) -->
+        <config-file target="*-Release.plist" parent="com.apple.security.application-groups">
+            <array>
+                <string>group.$(CFBundleIdentifier).shareextension</string>
+            </array>
+        </config-file>
+
         <source-file src="src/ios/OpenWithPlugin.m"/>
 
         <!-- Cordova hooks -->
