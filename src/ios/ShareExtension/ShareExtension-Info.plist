@@ -35,8 +35,8 @@
                         SUBQUERY(
                             $extensionItem.attachments, $attachment,
                             ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "__UNIFORM_TYPE_IDENTIFIER__"
-                        ).@count &gt;= 1
-                    ).@count &gt;= 1
+                        ).@count == $extensionItem.attachments.@count
+                    ).@count == 1
                 </string>
             </dict>
         </dict>
