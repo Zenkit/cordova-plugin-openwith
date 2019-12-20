@@ -24,5 +24,9 @@
         "openwith",
         "ios",
         "android"
-    ]
+    ],
+    "dependencies": {
+        "plist": "^3.0.1",
+        "xcode": "^2.0.0"
+    }
 }

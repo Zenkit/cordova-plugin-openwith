@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const xcode = require('xcode');
 
 const { PLUGIN_ID } = require('./constants');
 
@@ -73,7 +74,6 @@ const parsePbxProject = function(context, projectFolder) {
         return parsedProject.xcode;
     }
 
-    const xcode = context.requireCordovaModule('xcode');
     const pbxProjectPath = path.join(projectFolder, 'project.pbxproj');
     const pbxProject = xcode.project(pbxProjectPath);
     pbxProject.parseSync();

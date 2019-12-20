@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('path');
+const plist = require('plist');
 
 const { PLUGIN_ID, BUNDLE_SUFFIX, PBX_TARGET, PBX_GROUP_KEY } = require('./constants');
 const { readFile, writeFile, getPlatformFolder, getXCodeProject, parsePbxProject, getShareExtensionFiles } = require('./helpers');
@@ -41,10 +42,7 @@ const getPreferences = function(context, configXML, projectName) {
         `${projectName}-Info.plist`
     );
     return readFile(plistPath, 'utf-8')
-        .then(data => {
-            const plist = context.requireCordovaModule('plist');
-            return plist.parse(data);
-        })
+        .then(data => plist.parse(data))
         .then(plist => {
             const BUNDLE_IDENTIFIER = plist.CFBundleIdentifier + BUNDLE_SUFFIX;
             return [
