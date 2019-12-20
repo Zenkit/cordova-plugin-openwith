@@ -78,6 +78,15 @@ const getPreferences = function(context, configXML, projectName) {
         });
 };
 
+const setGroupEntitlement = function (file, group) {
+    const entitlement = 'com.apple.security.application-groups';
+    return readFile(file, 'utf-8').then(xml => {
+        const parsed = plist.parse(xml);
+        parsed[entitlement] = [group];
+        return writeFile(file, plist.build(parsed));
+    });
+};
+
 module.exports = function(context) {
     console.log('Adding target "' + PLUGIN_ID + '/ShareExtension" to XCode project');
 
@@ -188,7 +197,28 @@ module.exports = function(context) {
         return writeFile(pbx.path, pbx.project.writeSync());
     });
 
-    return Promise.all([replacedPreferences, updatedPbxProject]).then(() =>
+    const setGroupEntitlements = Promise.all([
+        resolvedXCodeProject,
+        resolvedPreferences
+    ]).then(([project, preferences]) => {
+        const dir = path.join(getPlatformFolder(context), project.name);
+        const group = preferences.find(
+            preference => preference.key === '__GROUP_IDENTIFIER__'
+        );
+        return Promise.all([
+            setGroupEntitlement(
+                path.join(dir, 'Entitlements-Debug.plist'),
+                group.value
+            ),
+            setGroupEntitlement(
+                path.join(dir, 'Entitlements-Release.plist'),
+                group.value
+            )
+        ]);
+    });
+
+
+    return Promise.all([replacedPreferences, updatedPbxProject, setGroupEntitlements]).then(() =>
         console.log('Added ShareExtension to XCode project')
     );
 };
