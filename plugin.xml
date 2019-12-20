@@ -68,7 +68,7 @@
 
         <!-- Cordova hooks -->
         <hook type="before_plugin_install" src="hooks/ios/copy-extension.js"/>
-        <hook type="after_plugin_install" src="hooks/ios/add-target.js"/>
+        <hook type="after_plugin_add" src="hooks/ios/add-target.js"/>
         <hook type="before_plugin_uninstall" src="hooks/ios/remove-target.js"/>
 
         <!-- Dependencies -->
