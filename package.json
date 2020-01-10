@@ -26,6 +26,7 @@
         "android"
     ],
     "dependencies": {
+        "fs-extra": "^8.1.0",
         "plist": "^3.0.1",
         "xcode": "^2.0.0"
     }
