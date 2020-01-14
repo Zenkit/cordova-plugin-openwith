@@ -3,7 +3,7 @@
 const path = require('path');
 const fs = require('fs-extra');
 
-const { getProjectName, getPbxProject } = require('./helpers');
+const { getProjectName, getProject } = require('./helpers');
 const { PLUGIN_ID, PBX_TARGET, PBX_GROUP_KEY } = require('./constants');
 
 const removeExtensionFiles = async ({ projectDir }) => {
@@ -12,36 +12,33 @@ const removeExtensionFiles = async ({ projectDir }) => {
 };
 
 const updateProject = async ({ projectDir, projectName }) => {
-    const pbxProject = await getPbxProject({ projectDir, projectName });
+    const project = await getProject({ projectDir, projectName });
 
-    const groupKey = pbxProject.findPBXGroupKey({ path: PBX_GROUP_KEY });
+    const groupKey = project.xcode.findPBXGroupKey({ path: PBX_GROUP_KEY });
     if (!groupKey) {
         return;
     }
 
-    var customTemplateKey = pbxProject.findPBXGroupKey({ name: 'CustomTemplate' });
-    pbxProject.removeFromPbxGroup(groupKey, customTemplateKey);
+    var customTemplateKey = project.xcode.findPBXGroupKey({ name: 'CustomTemplate' });
+    project.xcode.removeFromPbxGroup(groupKey, customTemplateKey);
 
-    const group = pbxProject.getPBXGroupByKey(groupKey);
-    const extensionTargetKey = pbxProject.findTargetKey(`"${PBX_TARGET}"`);
+    const group = project.xcode.getPBXGroupByKey(groupKey);
+    const extensionTargetKey = project.xcode.findTargetKey(`"${PBX_TARGET}"`);
     for (const { comment: extensionFile } of group.children) {
         const ext = path.extname(extensionFile);
         if (ext === '.plist') {
-            pbxProject.removeFile(extensionFile, groupKey);
+            project.xcode.removeFile(extensionFile, groupKey);
         } else if (ext === '.h' || ext === '.m') {
-            pbxProject.removeSourceFile(extensionFile, { target: extensionTargetKey }, groupKey);
+            project.xcode.removeSourceFile(extensionFile, { target: extensionTargetKey }, groupKey);
         } else {
-            pbxProject.removeResourceFile(extensionFile, { target: extensionTargetKey }, groupKey);
+            project.xcode.removeResourceFile(extensionFile, { target: extensionTargetKey }, groupKey);
         }
     }
 
-    const updatedProject = pbxProject.writeSync();
-    await fs.writeFile(pbxProject.filepath, updatedProject);
+    await project.write();
 };
 
 module.exports = async ctx => {
-    console.log(`Removing "${PLUGIN_ID}/ShareExtension"...`);
-
     const projectDir = path.join(ctx.opts.projectRoot, 'platforms', 'ios');
     await removeExtensionFiles({ projectDir });
 

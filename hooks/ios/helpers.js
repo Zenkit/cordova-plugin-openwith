@@ -2,7 +2,6 @@
 
 const path = require('path');
 const fs = require('fs-extra');
-const xcode = require('xcode');
 
 const { PLUGIN_ID } = require('./constants');
 
@@ -20,15 +19,11 @@ const getProjectName = async ({ projectDir }) => {
     return path.basename(xcodeproj, ext);
 };
 
-const getPbxProject = async ({ projectDir, projectName }) => {
-    const pbxPath = path.join(projectDir, `${projectName}.xcodeproj`, 'project.pbxproj');
-
-    const pbxProject = xcode.project(pbxPath);
-    await new Promise((resolve, reject) => {
-        pbxProject.parse(error => (error ? reject(error) : resolve()));
-    });
-
-    return pbxProject;
+const getProject = ({ projectDir, projectName }) => {
+    // eslint-disable-next-line global-require
+    var { parse } = require(path.join(projectDir, '/cordova/lib/projectFile.js'));
+    const pbxproj = path.join(projectDir, `${projectName}.xcodeproj`, 'project.pbxproj');
+    return parse({ root: projectDir, pbxproj });
 };
 
-module.exports = { PluginError, getProjectName, getPbxProject };
+module.exports = { PluginError, getProjectName, getProject };

@@ -4,12 +4,21 @@ const path = require('path');
 const fs = require('fs-extra');
 const plist = require('plist');
 
-const { PluginError, getProjectName, getPbxProject } = require('./helpers');
+const { PluginError, getProjectName, getProject } = require('./helpers');
 const { PLUGIN_ID, BUNDLE_SUFFIX, PBX_TARGET, PBX_GROUP_KEY } = require('./constants');
 
 const getProjectInfo = async ({ projectDir, projectName }) => {
     const file = path.join(projectDir, projectName, `${projectName}-Info.plist`);
-    return plist.parse(await fs.readFile(file, 'utf-8'));
+    const info = plist.parse(await fs.readFile(file, 'utf-8'));
+
+    if (info.CFBundleIdentifier.includes('$(PRODUCT_BUNDLE_IDENTIFIER)')) {
+        const project = await getProject({ projectDir, projectName });
+        const bundleIdentifier = project.xcode.getBuildProperty('PRODUCT_BUNDLE_IDENTIFIER');
+        const CFBundleIdentifier = info.CFBundleIdentifier.replace('$(PRODUCT_BUNDLE_IDENTIFIER)', bundleIdentifier);
+        return { ...info, CFBundleIdentifier };
+    }
+
+    return info;
 };
 
 const getPluginConfig = async ({ ctx }) => {
@@ -34,7 +43,6 @@ const copyExtensionFiles = async ({ projectDir, pluginConfig, projectInfo }) => 
     await fs.ensureDir(targetDir);
 
     const bundleIdentifier = projectInfo.CFBundleIdentifier + BUNDLE_SUFFIX;
-
     const extensionFiles = files.map(async file => {
         const content = await fs.readFile(path.join(srcDir, file), 'utf-8');
 
@@ -48,109 +56,105 @@ const copyExtensionFiles = async ({ projectDir, pluginConfig, projectInfo }) => 
             .replace(/__BUNDLE_SHORT_VERSION_STRING__/g, projectInfo.CFBundleShortVersionString);
 
         await fs.writeFile(path.join(targetDir, file), converted);
-
-        return file;
     });
 
-    console.log('Copied', extensionFiles.length, 'extension files to project');
-    return Promise.all(extensionFiles);
+    await Promise.all(extensionFiles);
+
+    console.log(`\tCopied ${files.length} extension files to project.`);
+    return files;
 };
 
-const getPbxTarget = ({ pbxProject }) => {
-    // The target name get's wrapped into quotation marks when it get's added.
-    const existing = pbxProject.findTargetKey(`"${PBX_TARGET}"`);
-    if (existing) {
-        console.log('Using existing extension target', existing);
-        const pbxNativeTarget = pbxProject.pbxNativeTargetSection()[existing];
-        return { uuid: existing, pbxNativeTarget };
+const getPbxTarget = ({ project }) => {
+    const uuid = project.xcode.findTargetKey(`"${PBX_TARGET}"`);
+    if (uuid) {
+        console.log(`\tUsing existing extension target "${uuid}"`);
+        // Expose the same structure returned by addTarget
+        const pbxNativeTarget = project.xcode.pbxNativeTargetSection()[uuid];
+        return { uuid, pbxNativeTarget };
     }
 
     // Add PBXNativeTarget to the project
-    const created = pbxProject.addTarget(PBX_TARGET, 'app_extension', PBX_TARGET);
+    const traget = project.xcode.addTarget(PBX_TARGET, 'app_extension', PBX_TARGET);
 
     // Add a new PBXSourcesBuildPhase for our ShareViewController
     // (we can't add it to the existing one because an extension is kind of an extra app)
-    pbxProject.addBuildPhase([], 'PBXSourcesBuildPhase', 'Sources', created.uuid);
+    project.xcode.addBuildPhase([], 'PBXSourcesBuildPhase', 'Sources', traget.uuid);
 
     // Add a new PBXResourcesBuildPhase for the Resources used by the Share Extension
     // (MainInterface.storyboard)
-    pbxProject.addBuildPhase([], 'PBXResourcesBuildPhase', 'Resources', created.uuid);
+    project.xcode.addBuildPhase([], 'PBXResourcesBuildPhase', 'Resources', traget.uuid);
 
-    console.log('Created extension target', created.uuid);
-    return created;
+    console.log(`\tCreated extension target ${traget.uuid}`);
+    return traget;
 };
 
-// Create a separate PBXGroup for the shareExtensions files, name has to be unique and path must be in quotation marks
-const getPbxGroupKey = ({ pbxProject }) => {
-    const existing = pbxProject.findPBXGroupKey({ path: PBX_GROUP_KEY });
-    if (existing) {
-        console.log('Using existing extension group', existing);
-        return existing;
+// Create a separate PBXGroup for the ShareExtensions files, name has to be unique and path must be in quotation marks
+const getPbxGroupKey = ({ project }) => {
+    const existingKey = project.xcode.findPBXGroupKey({ path: PBX_GROUP_KEY });
+    if (existingKey) {
+        console.log(`\tUsing existing extension group "${existingKey}"`);
+        return existingKey;
     }
 
-    const created = pbxProject.pbxCreateGroup(PBX_GROUP_KEY, PBX_GROUP_KEY);
+    const createdKey = project.xcode.pbxCreateGroup(PBX_GROUP_KEY, PBX_GROUP_KEY);
 
     // Add the PbxGroup to cordovas "CustomTemplate"-group
-    const customTemplateKey = pbxProject.findPBXGroupKey({ name: 'CustomTemplate' });
-    pbxProject.addToPbxGroup(created, customTemplateKey);
+    const customTemplateKey = project.xcode.findPBXGroupKey({ name: 'CustomTemplate' });
+    project.xcode.addToPbxGroup(createdKey, customTemplateKey);
 
-    console.log('Created extension group', created);
-    return created;
+    console.log(`\tCreated extension group ${createdKey}.`);
+    return createdKey;
 };
 
-const updateProvisioning = ({ pbxProject, extensionTarget }) => {
-    const projectTarget = pbxProject.getFirstTarget();
+const addExtensionAttributes = ({ project, extensionTarget }) => {
+    const projectTarget = project.xcode.getFirstTarget();
 
-    const { firstProject } = pbxProject.getFirstProject();
+    const { firstProject } = project.xcode.getFirstProject();
     var attributes = Object.entries(firstProject.attributes.TargetAttributes[projectTarget.uuid]);
     for (const [key, value] of attributes) {
-        pbxProject.addTargetAttribute(key, value, extensionTarget);
+        project.xcode.addTargetAttribute(key, value, extensionTarget);
     }
+    console.log(`\tAdded ${attributes.length} attributes to extension.`);
+};
 
-    console.log('Copied', attributes.length, 'attributes to extension');
+const setExtensionIdentifier = ({ project, extensionTarget }) => {
+    const { buildConfigurationList } = extensionTarget.pbxNativeTarget;
+    const { buildConfigurations } = project.xcode.pbxXCConfigurationList()[buildConfigurationList];
+    const buildConfigurationSections = project.xcode.pbxXCBuildConfigurationSection();
 
-    const configLists = pbxProject.pbxXCConfigurationList();
-    const buildConfigs = pbxProject.pbxXCBuildConfigurationSection();
-
-    const projectBuildConfigs = configLists[firstProject.buildConfigurationList].buildConfigurations;
-    const extensionConfigList = extensionTarget.pbxNativeTarget.buildConfigurationList;
-    const extensionBuildConfigs = configLists[extensionConfigList].buildConfigurations;
-    for (const build of extensionBuildConfigs) {
-        const buildConfig = buildConfigs[build.value];
-        const y = projectBuildConfigs.find(x => x.comment === build.comment);
-        const { PRODUCT_BUNDLE_IDENTIFIER } = buildConfigs[y.value].buildSettings;
-        buildConfig.buildSettings.PRODUCT_BUNDLE_IDENTIFIER = PRODUCT_BUNDLE_IDENTIFIER + BUNDLE_SUFFIX;
+    const extensionId = project.xcode.getBuildProperty('PRODUCT_BUNDLE_IDENTIFIER') + BUNDLE_SUFFIX;
+    for (const config of buildConfigurations) {
+        buildConfigurationSections[config.value].buildSettings.PRODUCT_BUNDLE_IDENTIFIER = extensionId;
     }
-
-    console.log('Copied', projectBuildConfigs.length, 'build configs to extension');
+    console.log(`\tSet extendsion identifier "${extensionId}".`);
 };
 
 const updateProject = async ({ projectDir, projectName, extensionFiles }) => {
-    const pbxProject = await getPbxProject({ projectDir, projectName });
+    const project = await getProject({ projectDir, projectName });
 
-    const groupKey = getPbxGroupKey({ pbxProject });
-    const extensionTarget = getPbxTarget({ pbxProject });
+    const groupKey = getPbxGroupKey({ project });
+    const extensionTarget = getPbxTarget({ project });
     for (const extensionFile of extensionFiles) {
         const ext = path.extname(extensionFile);
         if (ext === '.plist') {
-            pbxProject.addFile(extensionFile, groupKey);
+            project.xcode.addFile(extensionFile, groupKey);
         } else if (ext === '.h' || ext === '.m') {
-            pbxProject.addSourceFile(extensionFile, { target: extensionTarget.uuid }, groupKey);
+            project.xcode.addSourceFile(extensionFile, { target: extensionTarget.uuid }, groupKey);
         } else {
-            pbxProject.addResourceFile(extensionFile, { target: extensionTarget.uuid }, groupKey);
+            project.xcode.addResourceFile(extensionFile, { target: extensionTarget.uuid }, groupKey);
         }
     }
 
-    await updateProvisioning({ pbxProject, extensionTarget });
+    await addExtensionAttributes({ project, extensionTarget });
+    await setExtensionIdentifier({ project, extensionTarget });
 
-    const updatedProject = pbxProject.writeSync();
-    await fs.writeFile(pbxProject.filepath, updatedProject);
+    await project.write();
 
-    console.log('Added extension to project');
+    console.log('\tAdded extension to project.');
 };
 
 module.exports = async ctx => {
-    console.log(`Preparing "${PLUGIN_ID}/ShareExtension"...`);
+    console.log('ShareExtension after prepare hook:');
 
     const projectDir = path.join(ctx.opts.projectRoot, 'platforms', 'ios');
     const projectName = await getProjectName({ projectDir });
@@ -161,9 +165,4 @@ module.exports = async ctx => {
     const extensionFiles = await copyExtensionFiles({ projectDir, pluginConfig, projectInfo });
 
     await updateProject({ projectDir, projectName, extensionFiles });
-
-    // eslint-disable-next-line global-require
-    var projectFile = require(path.join(projectDir, '/cordova/lib/projectFile.js'));
-    projectFile.purgeProjectFileCache(projectDir);
-    console.log('Purged project file cache');
 };
