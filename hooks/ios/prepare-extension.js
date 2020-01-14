@@ -35,6 +35,9 @@ const getPluginConfig = async ({ ctx }) => {
     }, {});
 };
 
+const buildExtensionIdentifier = ({ projectInfo }) => projectInfo.CFBundleIdentifier + BUNDLE_SUFFIX;
+const buildGroupIdentifier = ({ projectInfo }) => `group.${projectInfo.CFBundleIdentifier}${BUNDLE_SUFFIX}`;
+
 const copyExtensionFiles = async ({ projectDir, pluginConfig, projectInfo }) => {
     const srcDir = path.join(__dirname, '../../src/ios/ShareExtension');
     const files = await fs.readdir(srcDir);
@@ -42,16 +45,17 @@ const copyExtensionFiles = async ({ projectDir, pluginConfig, projectInfo }) => 
     const targetDir = path.join(projectDir, 'ShareExtension');
     await fs.ensureDir(targetDir);
 
-    const bundleIdentifier = projectInfo.CFBundleIdentifier + BUNDLE_SUFFIX;
+    const bundleIdentifier = buildExtensionIdentifier({ projectInfo });
+    const groupIdentifier = buildGroupIdentifier({ projectInfo });
     const extensionFiles = files.map(async file => {
         const content = await fs.readFile(path.join(srcDir, file), 'utf-8');
 
         const converted = content
+            .replace(/__GROUP_IDENTIFIER__/g, groupIdentifier)
             .replace(/__BUNDLE_IDENTIFIER__/g, bundleIdentifier)
             .replace(/__URL_SCHEME__/g, pluginConfig.IOS_URL_SCHEME)
             .replace(/__BUNDLE_VERSION__/g, projectInfo.CFBundleVersion)
             .replace(/__DISPLAY_NAME__/g, projectInfo.CFBundleDisplayName)
-            .replace(/__GROUP_IDENTIFIER__/g, `group.${bundleIdentifier}`)
             .replace(/__UNIFORM_TYPE_IDENTIFIER__/g, pluginConfig.IOS_UNIFORM_TYPE_IDENTIFIER)
             .replace(/__BUNDLE_SHORT_VERSION_STRING__/g, projectInfo.CFBundleShortVersionString);
 
@@ -117,19 +121,20 @@ const addExtensionAttributes = ({ project, extensionTarget }) => {
     console.log(`\tAdded ${attributes.length} attributes to extension.`);
 };
 
-const setExtensionIdentifier = ({ project, extensionTarget }) => {
+const setExtensionIdentifier = ({ project, extensionTarget, projectInfo }) => {
     const { buildConfigurationList } = extensionTarget.pbxNativeTarget;
     const { buildConfigurations } = project.xcode.pbxXCConfigurationList()[buildConfigurationList];
     const buildConfigurationSections = project.xcode.pbxXCBuildConfigurationSection();
 
-    const extensionId = project.xcode.getBuildProperty('PRODUCT_BUNDLE_IDENTIFIER') + BUNDLE_SUFFIX;
+
+    const bundleIdentifier = buildExtensionIdentifier({ projectInfo });
     for (const config of buildConfigurations) {
-        buildConfigurationSections[config.value].buildSettings.PRODUCT_BUNDLE_IDENTIFIER = extensionId;
+        buildConfigurationSections[config.value].buildSettings.PRODUCT_BUNDLE_IDENTIFIER = bundleIdentifier;
     }
-    console.log(`\tSet extendsion identifier "${extensionId}".`);
+    console.log(`\tSet extendsion identifier "${bundleIdentifier}".`);
 };
 
-const updateProject = async ({ projectDir, projectName, extensionFiles }) => {
+const updateProject = async ({ projectDir, projectName, extensionFiles, projectInfo }) => {
     const project = await getProject({ projectDir, projectName });
 
     const groupKey = getPbxGroupKey({ project });
@@ -146,11 +151,33 @@ const updateProject = async ({ projectDir, projectName, extensionFiles }) => {
     }
 
     await addExtensionAttributes({ project, extensionTarget });
-    await setExtensionIdentifier({ project, extensionTarget });
+    await setExtensionIdentifier({ project, extensionTarget, projectInfo });
 
     await project.write();
 
     console.log('\tAdded extension to project.');
+};
+
+const updateProjectEntitlements = async({ projectDir, projectName, projectInfo }) => {
+    const entitlementKey = 'com.apple.security.application-groups';
+    const groupIdentifier = buildGroupIdentifier({ projectInfo });
+
+    const promises = ['Release', 'Debug'].map(async type => {
+        const file = path.join(projectDir, projectName, `Entitlements-${type}.plist`);
+        const entitlements = plist.parse(await fs.readFile(file, 'utf-8'));
+
+        const groups = entitlements[entitlementKey] || [];
+        if (groups.includes(groupIdentifier)) {
+            return;
+        }
+
+        entitlements[entitlementKey] = [...groups, groupIdentifier];
+        await fs.writeFile(file, plist.build(entitlements));
+    });
+
+    await Promise.all(promises);
+
+    console.log(`\tAdded "${groupIdentifier}" to application groups`);
 };
 
 module.exports = async ctx => {
@@ -164,5 +191,7 @@ module.exports = async ctx => {
 
     const extensionFiles = await copyExtensionFiles({ projectDir, pluginConfig, projectInfo });
 
-    await updateProject({ projectDir, projectName, extensionFiles });
+    await updateProject({ projectDir, projectName, extensionFiles, projectInfo });
+
+    await updateProjectEntitlements({ projectDir, projectName, projectInfo });
 };
