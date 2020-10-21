@@ -9,6 +9,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.provider.MediaStore;
 import android.text.TextUtils;
+import android.webkit.MimeTypeMap;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -22,22 +23,34 @@ class Serializer {
         return array == null || array.length() < 1;
     }
 
-    private static String getFileNameFromUri(Uri uri, ContentResolver resolver) {
-        String[] projection = {MediaStore.MediaColumns.DISPLAY_NAME};
+    private static String queryColumnFromUri(Uri uri, ContentResolver resolver, String column) {
+        String[] projection = {column};
         Cursor cursor = resolver.query(uri, projection, null, null, null);
-
         if (cursor != null) {
             try {
                 if (cursor.moveToFirst()) {
-                    int index = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME);
+                    int index = cursor.getColumnIndex(column);
                     return cursor.getString(index);
                 }
             } finally {
                 cursor.close();
             }
         }
-
         return null;
+    }
+    private static String getFileNameFromUri(Uri uri, ContentResolver resolver) {
+        return queryColumnFromUri(uri, resolver, MediaStore.MediaColumns.DISPLAY_NAME);
+    }
+    private static String getFileTypeFromUri(Uri uri, ContentResolver resolver) {
+        String mimetype = queryColumnFromUri(uri, resolver, MediaStore.MediaColumns.MIME_TYPE);
+        if (mimetype != null) {
+            return mimetype;
+        }
+        if (uri.getScheme() == ContentResolver.SCHEME_CONTENT) {
+            return resolver.getType(uri);
+        }
+        String extension = MimeTypeMap.getFileExtensionFromUrl(uri.toString());
+        return MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension.toLowerCase());
     }
 
     private static JSONObject buildTextItem(String text) throws JSONException {
@@ -57,7 +70,7 @@ class Serializer {
 
         JSONObject item = new JSONObject();
         item.put("uri", uri);
-        item.put("type", resolver.getType(uri));
+        item.put("type", getFileTypeFromUri(uri, resolver));
         item.put("name", getFileNameFromUri(uri, resolver));
         return item;
     }
