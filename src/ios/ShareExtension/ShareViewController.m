@@ -124,6 +124,43 @@
     [self openURL:[NSURL URLWithString:url]];
 }
 
+- (NSURL*) buildSharedFileUrl {
+    // Copy the file to the shared cache folder so the cordova app has access to it.
+    NSURL *containerUrl = [[NSFileManager defaultManager] containerURLForSecurityApplicationGroupIdentifier: SHAREEXT_GROUP_IDENTIFIER];
+    NSURL *sharedCacheUrl = [containerUrl URLByAppendingPathComponent: @"Library/Caches"];
+
+    // Create a unique shared filename to avoid overwriting
+    return [sharedCacheUrl URLByAppendingPathComponent: [[NSUUID UUID] UUIDString]];
+}
+
+- (NSDictionary*) getItemFromFileUrl:(NSURL*)fileUrl itemProvider:(NSItemProvider*)itemProvider {
+    NSURL *sharedFileUrl = [self buildSharedFileUrl];
+    if (![[NSFileManager defaultManager] copyItemAtURL:fileUrl toURL:sharedFileUrl error:nil]) {
+        [self debug:[NSString stringWithFormat:@"failed to copy file from \"%@\" to \"%@\"", fileUrl, sharedFileUrl]];
+        return nil;
+    }
+    [self debug:[NSString stringWithFormat:@"copied file from \"%@\" to \"%@\"", fileUrl, sharedFileUrl]];
+
+    NSString *uti = (NSString*)kUTTypeData;
+    if (itemProvider.registeredTypeIdentifiers.count > 0) {
+        uti = itemProvider.registeredTypeIdentifiers.firstObject;
+    }
+
+    NSString *fileName = [itemProvider suggestedName];
+    NSPredicate *hasExtension = [NSPredicate predicateWithFormat:@"SELF MATCHES %@", @"\\.\\w+$"];
+    if (![hasExtension evaluateWithObject: fileName]) {
+        fileName = fileUrl.lastPathComponent;
+    }
+
+    return @{
+        @"uti": uti,
+        @"name": fileName,
+        @"type": [self mimeTypeFromUti:uti],
+        @"uri" : sharedFileUrl.absoluteString,
+        @"utis": itemProvider.registeredTypeIdentifiers,
+    };
+}
+
 - (void) loadAttachments {
     __block NSMutableArray *items = [[NSMutableArray alloc] init];
     __block NSDictionary *results = @{
@@ -133,12 +170,13 @@
                                       };
 
     NSExtensionItem *extensionItem = self.extensionContext.inputItems.firstObject;
-    __block int remainingAttachments = extensionItem.attachments.count;
+    __block NSInteger remainingAttachments = extensionItem.attachments.count;
 
     NSString *urlUTI = (NSString*)kUTTypeURL;
     NSString *fileURLUTI = (NSString*)kUTTypeFileURL;
     NSString *plainTextUTI = (NSString*)kUTTypePlainText;
     NSString *dataUTI = (NSString*)kUTTypeData;
+    NSString *imageUTI = (NSString*)kUTTypeImage;
 
     for (NSItemProvider* itemProvider in extensionItem.attachments) {
         [self debug:[NSString stringWithFormat:@"item provider registered indentifiers = %@", itemProvider.registeredTypeIdentifiers]];
@@ -198,47 +236,60 @@
                 }
             }];
         }
+        // Handle images separatly because some apps might provide the shared image not as a file but an UIImage (e.g. the screenshot app)
+        else if ([itemProvider hasItemConformingToTypeIdentifier:imageUTI] && ![itemProvider hasRepresentationConformingToTypeIdentifier:imageUTI fileOptions:NSItemProviderFileOptionOpenInPlace]) {
+            [self debug:[NSString stringWithFormat:@"loading image data"]];
+
+            [itemProvider loadItemForTypeIdentifier:imageUTI options:nil completionHandler:^(id<NSSecureCoding> item, NSError* error) {
+                --remainingAttachments;
+
+                if ([(NSObject*)item isKindOfClass:[NSURL class]]) {
+                    NSURL *fileUrl = (NSURL*)item;
+                    NSDictionary *item = [self getItemFromFileUrl:fileUrl itemProvider:itemProvider];
+                    if (item != nil) {
+                        [self debug:[NSString stringWithFormat:@"loaded image file as \"%@\" = %@", imageUTI, item]];
+                        [items addObject:item];
+                    }
+                } else if ([(NSObject*)item isKindOfClass:[UIImage class]]) {
+                    NSURL *sharedFileUrl = [self buildSharedFileUrl];
+                    NSData *image = UIImagePNGRepresentation((UIImage*)item);
+                    BOOL createdImage = [image writeToURL:sharedFileUrl atomically:YES];
+
+                    if (createdImage) {
+                        NSString *uti = (NSString*)kUTTypePNG;
+                        NSDictionary *dict = @{
+                            @"uti": uti,
+                            @"name": @"image.png",
+                            @"type": [self mimeTypeFromUti:uti],
+                            @"uri" : sharedFileUrl.absoluteString,
+                            @"utis": itemProvider.registeredTypeIdentifiers,
+                        };
+
+                        [self debug:[NSString stringWithFormat:@"loaded item as \"%@\" = %@", uti, dict]];
+
+                        [items addObject:dict];
+                    } else {
+                        [self debug:[NSString stringWithFormat:@"failed to create image file \"%@\"", sharedFileUrl]];
+                    }
+                } else {
+                    [self debug:[NSString stringWithFormat:@"failed to load data as image, is not url or image"]];
+                }
+
+                if (remainingAttachments == 0) {
+                    [self sendResults:results];
+                }
+            }];
+        }
         // Handle any other data, it tries to load the file in place or copies it to tmp
         else if ([itemProvider hasItemConformingToTypeIdentifier:dataUTI]) {
             [self debug:[NSString stringWithFormat:@"loading file in place as \"%@\"", dataUTI]];
             [itemProvider loadInPlaceFileRepresentationForTypeIdentifier:dataUTI completionHandler:^(NSURL* fileUrl, BOOL isInPlace, NSError* error) {
                 --remainingAttachments;
 
-                NSString *uti = dataUTI;
-                if (itemProvider.registeredTypeIdentifiers.count > 0) {
-                    uti = itemProvider.registeredTypeIdentifiers.firstObject;
-                }
-
-                NSString *fileName = @"";
-                if ([itemProvider respondsToSelector:NSSelectorFromString(@"getSuggestedName")]) {
-                    fileName = [itemProvider valueForKey:@"suggestedName"];
-                } else if (isInPlace) {
-                    fileName = fileUrl.lastPathComponent;
-                }
-
-                // Copy the file to the shared cache folder so the cordova app has access to it.
-                NSURL *containerUrl = [ [ NSFileManager defaultManager] containerURLForSecurityApplicationGroupIdentifier: SHAREEXT_GROUP_IDENTIFIER ];
-                NSURL *sharedCacheUrl = [containerUrl URLByAppendingPathComponent: @"Library/Caches"];
-
-                // Create a unique shared filename to avoid overwriting
-                NSString *sharedFileName = [[[NSUUID UUID] UUIDString] stringByAppendingPathExtension:fileUrl.lastPathComponent];
-                NSURL *sharedFileUrl = [sharedCacheUrl URLByAppendingPathComponent: sharedFileName];
-                Boolean copiedSharedFile = [[NSFileManager defaultManager] copyItemAtURL:fileUrl toURL:sharedFileUrl error:nil];
-
-                if (copiedSharedFile) {
-                    NSDictionary *dict = @{
-                                           @"uri" : sharedFileUrl.absoluteString,
-                                           @"uti": uti,
-                                           @"utis": itemProvider.registeredTypeIdentifiers,
-                                           @"type": [self mimeTypeFromUti:uti],
-                                           @"name": fileName,
-                                           };
-
-                    [self debug:[NSString stringWithFormat:@"loaded file in place as \"%@\" = %@", dataUTI, dict]];
-
-                    [items addObject:dict];
-                } else {
-                    [self debug:[NSString stringWithFormat:@"failed to copy file \"%@\" to \"%@\"", fileUrl, sharedFileUrl]];
+                NSDictionary *item = [self getItemFromFileUrl:fileUrl itemProvider:itemProvider];
+                if (item != nil) {
+                    [self debug:[NSString stringWithFormat:@"loaded file in place as \"%@\" = %@", dataUTI, item]];
+                    [items addObject:item];
                 }
 
                 if (remainingAttachments == 0) {
