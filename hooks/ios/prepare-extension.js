@@ -7,18 +7,21 @@ const plist = require('plist');
 const { PluginError, getProjectName, getProject } = require('./helpers');
 const { PLUGIN_ID, BUNDLE_SUFFIX, PBX_TARGET, PBX_GROUP_KEY } = require('./constants');
 
+const replaceBuildProperties = async function (string, { projectDir, projectName }) {
+    const regex = /\$\((\w+)\)/;
+    if (regex.test(string) === false) {
+        return string;
+    }
+    const project = await getProject({ projectDir, projectName });
+    return string.replace(regex, (_, property) => project.xcode.getBuildProperty(property, undefined, projectName));
+};
+
 const getProjectInfo = async ({ projectDir, projectName }) => {
     const file = path.join(projectDir, projectName, `${projectName}-Info.plist`);
     const info = plist.parse(await fs.readFile(file, 'utf-8'));
 
-    if (info.CFBundleIdentifier.includes('$(PRODUCT_BUNDLE_IDENTIFIER)')) {
-        const project = await getProject({ projectDir, projectName });
-        const bundleIdentifier = project.xcode.getBuildProperty('PRODUCT_BUNDLE_IDENTIFIER');
-        const CFBundleIdentifier = info.CFBundleIdentifier.replace('$(PRODUCT_BUNDLE_IDENTIFIER)', bundleIdentifier);
-        return { ...info, CFBundleIdentifier };
-    }
-
-    return info;
+    const CFBundleIdentifier = await replaceBuildProperties(info.CFBundleIdentifier, { projectDir, projectName });
+    return { ...info, CFBundleIdentifier };
 };
 
 const getPluginConfig = async ({ ctx }) => {
@@ -126,7 +129,6 @@ const setExtensionIdentifier = ({ project, extensionTarget, projectInfo }) => {
     const { buildConfigurations } = project.xcode.pbxXCConfigurationList()[buildConfigurationList];
     const buildConfigurationSections = project.xcode.pbxXCBuildConfigurationSection();
 
-
     const bundleIdentifier = buildExtensionIdentifier({ projectInfo });
     for (const config of buildConfigurations) {
         buildConfigurationSections[config.value].buildSettings.PRODUCT_BUNDLE_IDENTIFIER = bundleIdentifier;
@@ -158,7 +160,7 @@ const updateProject = async ({ projectDir, projectName, extensionFiles, projectI
     console.log('\tAdded extension to project.');
 };
 
-const updateProjectEntitlements = async({ projectDir, projectName, projectInfo }) => {
+const updateProjectEntitlements = async ({ projectDir, projectName, projectInfo }) => {
     const entitlementKey = 'com.apple.security.application-groups';
     const groupIdentifier = buildGroupIdentifier({ projectInfo });
 
