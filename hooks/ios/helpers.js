@@ -26,4 +26,50 @@ const getProject = ({ projectDir, projectName }) => {
     return parse({ root: projectDir, pbxproj });
 };
 
-module.exports = { PluginError, getProjectName, getProject };
+// NOTE: Get the build config the same way the ios compile function does.
+// https://github.com/apache/cordova-ios/blob/e92f653/bin/templates/scripts/cordova/lib/build.js#L104-L121
+const getBuildConfig = async function ({ ctx }) {
+    const { options } = ctx.opts;
+    const configPath = options.buildConfig;
+    if (!configPath) {
+        return options;
+    }
+
+    const configExists = await fs.pathExists(configPath);
+    if (!configExists) {
+        throw new PluginError(`Build config file does not exist: ${configPath}`);
+    }
+
+    const { ios } = await fs.readJson(configPath);
+    if (!ios) {
+        return options;
+    }
+
+    const type = options.release ? 'release' : 'debug';
+    const config = ios[type];
+    if (!config) {
+        return options;
+    }
+
+    return {
+        ...options,
+        ...[
+            'codeSignIdentity',
+            'codeSignResourceRules',
+            'provisioningProfile',
+            'developmentTeam',
+            'packageType',
+            'buildFlag',
+            'iCloudContainerEnvironment',
+            'automaticProvisioning',
+        ].reduce((result, key) => {
+            var value = options[key] || config[key];
+            if (value) {
+                result[key] = value;
+            }
+            return result;
+        }, {}),
+    };
+};
+
+module.exports = { PluginError, getProjectName, getProject, getBuildConfig };
