@@ -124,17 +124,25 @@
     [self openURL:[NSURL URLWithString:url]];
 }
 
-- (NSURL*) buildSharedFileUrl {
+- (NSURL*) buildSharedFileUrl:(NSString*)fileName {
     // Copy the file to the shared cache folder so the cordova app has access to it.
     NSURL *containerUrl = [[NSFileManager defaultManager] containerURLForSecurityApplicationGroupIdentifier: SHAREEXT_GROUP_IDENTIFIER];
     NSURL *sharedCacheUrl = [containerUrl URLByAppendingPathComponent: @"Library/Caches"];
 
-    // Create a unique shared filename to avoid overwriting
-    return [sharedCacheUrl URLByAppendingPathComponent: [[NSUUID UUID] UUIDString]];
+    // Create a unique shared filename to avoid overwriting,
+    // but keep the file name/extension so the file has the right type when read from disk.
+    NSString *sharedFileName = [[[NSUUID UUID] UUIDString] stringByAppendingPathExtension:fileName];
+    return [sharedCacheUrl URLByAppendingPathComponent:sharedFileName];
 }
 
 - (NSDictionary*) getItemFromFileUrl:(NSURL*)fileUrl itemProvider:(NSItemProvider*)itemProvider {
-    NSURL *sharedFileUrl = [self buildSharedFileUrl];
+    NSString *fileName = [itemProvider suggestedName];
+    NSPredicate *hasExtension = [NSPredicate predicateWithFormat:@"SELF MATCHES %@", @"\\.\\w+$"];
+    if (![hasExtension evaluateWithObject: fileName]) {
+        fileName = fileUrl.lastPathComponent;
+    }
+
+    NSURL *sharedFileUrl = [self buildSharedFileUrl:fileName];
     if (![[NSFileManager defaultManager] copyItemAtURL:fileUrl toURL:sharedFileUrl error:nil]) {
         [self debug:[NSString stringWithFormat:@"failed to copy file from \"%@\" to \"%@\"", fileUrl, sharedFileUrl]];
         return nil;
@@ -144,12 +152,6 @@
     NSString *uti = (NSString*)kUTTypeData;
     if (itemProvider.registeredTypeIdentifiers.count > 0) {
         uti = itemProvider.registeredTypeIdentifiers.firstObject;
-    }
-
-    NSString *fileName = [itemProvider suggestedName];
-    NSPredicate *hasExtension = [NSPredicate predicateWithFormat:@"SELF MATCHES %@", @"\\.\\w+$"];
-    if (![hasExtension evaluateWithObject: fileName]) {
-        fileName = fileUrl.lastPathComponent;
     }
 
     return @{
@@ -251,15 +253,16 @@
                         [items addObject:item];
                     }
                 } else if ([(NSObject*)item isKindOfClass:[UIImage class]]) {
-                    NSURL *sharedFileUrl = [self buildSharedFileUrl];
+                    NSString *fileName = @"image.png";
+                    NSString *uti = (NSString*)kUTTypePNG;
                     NSData *image = UIImagePNGRepresentation((UIImage*)item);
+                    NSURL *sharedFileUrl = [self buildSharedFileUrl:fileName];
                     BOOL createdImage = [image writeToURL:sharedFileUrl atomically:YES];
 
                     if (createdImage) {
-                        NSString *uti = (NSString*)kUTTypePNG;
                         NSDictionary *dict = @{
                             @"uti": uti,
-                            @"name": @"image.png",
+                            @"name": fileName,
                             @"type": [self mimeTypeFromUti:uti],
                             @"uri" : sharedFileUrl.absoluteString,
                             @"utis": itemProvider.registeredTypeIdentifiers,
