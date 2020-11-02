@@ -4,7 +4,7 @@ const path = require('path');
 const fs = require('fs-extra');
 const plist = require('plist');
 
-const { PluginError, getProjectName, getProject } = require('./helpers');
+const { PluginError, getProjectName, getProject, getBuildConfig } = require('./helpers');
 const { PLUGIN_ID, BUNDLE_SUFFIX, PBX_TARGET, PBX_GROUP_KEY } = require('./constants');
 
 const replaceBuildProperties = async function (string, { projectDir, projectName }) {
@@ -124,19 +124,52 @@ const addExtensionAttributes = ({ project, extensionTarget }) => {
     console.log(`\tAdded ${attributes.length} attributes to extension.`);
 };
 
-const setExtensionIdentifier = ({ project, extensionTarget, projectInfo }) => {
-    const { buildConfigurationList } = extensionTarget.pbxNativeTarget;
-    const { buildConfigurations } = project.xcode.pbxXCConfigurationList()[buildConfigurationList];
-    const buildConfigurationSections = project.xcode.pbxXCBuildConfigurationSection();
+const updateExtensionBuildProperties = ({ project, extensionTarget, projectInfo, projectName, buildConfig }) => {
+    const extensionTargetName = extensionTarget.pbxNativeTarget.name;
+    const updateBuildProperty = function (property, value) {
+        if (value) {
+            // NOTE: If a value contains whitespaces and isn't already wrapped,
+            // wrap it with "" otherwise the build would fail.
+            const normalized = typeof value === 'string' && /^[^"].*\s/.test(value) ? `"${value}"` : value;
+            project.xcode.updateBuildProperty(property, normalized, null, extensionTargetName);
+            console.log('\tSet build property', property, 'to', normalized);
+        }
+    };
 
     const bundleIdentifier = buildExtensionIdentifier({ projectInfo });
-    for (const config of buildConfigurations) {
-        buildConfigurationSections[config.value].buildSettings.PRODUCT_BUNDLE_IDENTIFIER = bundleIdentifier;
+    updateBuildProperty('PRODUCT_BUNDLE_IDENTIFIER', bundleIdentifier);
+
+    const build = buildConfig.release ? 'Release' : 'Debug';
+    const buildPropertiesToCopy = ['IPHONEOS_DEPLOYMENT_TARGET', 'TARGETED_DEVICE_FAMILY'];
+    for (const property of buildPropertiesToCopy) {
+        const value = project.xcode.getBuildProperty(property, build, projectName);
+        updateBuildProperty(property, value);
     }
-    console.log(`\tSet extendsion identifier "${bundleIdentifier}".`);
+
+    // NOTE: Set build properties from build config
+    // https://github.com/apache/cordova-ios/blob/e92f653/bin/templates/scripts/cordova/lib/build.js#L163-L175
+    const buildPropertyToBuildConfigKeyMap = {
+        CODE_SIGN_IDENTITY: 'codeSignIdentity',
+        // NOTE: This is set in the build-extras.xcconfig but doesn't work here.
+        // 'CODE_SIGN_IDENTITY[sdk=iphoneos*]': 'codeSignIdentity',
+        CODE_SIGN_RESOURCE_RULES_PATH: 'codeSignResourceRules',
+        PROVISIONING_PROFILE: 'provisioningProfile',
+        DEVELOPMENT_TEAM: 'developmentTeam',
+    };
+
+    for (const [property, key] of Object.entries(buildPropertyToBuildConfigKeyMap)) {
+        updateBuildProperty(property, buildConfig[key]);
+    }
 };
 
-const updateProject = async ({ projectDir, projectName, extensionFiles, projectInfo }) => {
+const updateCodeSignStyle = function ({ project, extensionTarget, codeSignStyle }) {
+    const extensionTargetName = extensionTarget.pbxNativeTarget.name;
+    project.xcode.updateBuildProperty('CODE_SIGN_STYLE', codeSignStyle, extensionTargetName);
+    project.xcode.addTargetAttribute('ProvisioningStyle', codeSignStyle, extensionTarget);
+    console.log('\tSet code signing style to', codeSignStyle);
+};
+
+const updateProject = async ({ projectDir, projectName, extensionFiles, projectInfo, buildConfig }) => {
     const project = await getProject({ projectDir, projectName });
 
     const groupKey = getPbxGroupKey({ project });
@@ -153,7 +186,15 @@ const updateProject = async ({ projectDir, projectName, extensionFiles, projectI
     }
 
     await addExtensionAttributes({ project, extensionTarget });
-    await setExtensionIdentifier({ project, extensionTarget, projectInfo });
+    await updateExtensionBuildProperties({ project, extensionTarget, projectInfo, projectName, buildConfig });
+
+    // NOTE: Update code signing style
+    // https://github.com/apache/cordova-ios/blob/e92f653/bin/templates/scripts/cordova/lib/build.js#L188-L194
+    if (buildConfig.provisioningProfile) {
+        await updateCodeSignStyle({ project, extensionTarget, codeSignStyle: 'Manual' });
+    } else if (buildConfig.automaticProvisioning) {
+        await updateCodeSignStyle({ project, extensionTarget, codeSignStyle: 'Automatic' });
+    }
 
     await project.write();
 
@@ -188,12 +229,12 @@ module.exports = async ctx => {
     const projectDir = path.join(ctx.opts.projectRoot, 'platforms', 'ios');
     const projectName = await getProjectName({ projectDir });
 
+    const buildConfig = await getBuildConfig({ ctx });
     const pluginConfig = await getPluginConfig({ ctx });
     const projectInfo = await getProjectInfo({ projectDir, projectName });
 
     const extensionFiles = await copyExtensionFiles({ projectDir, pluginConfig, projectInfo });
 
-    await updateProject({ projectDir, projectName, extensionFiles, projectInfo });
-
+    await updateProject({ projectDir, projectName, extensionFiles, projectInfo, buildConfig });
     await updateProjectEntitlements({ projectDir, projectName, projectInfo });
 };
