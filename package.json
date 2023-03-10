@@ -1,10 +1,13 @@
 {
-    "name": "cordova-plugin-openwith",
+    "name": "@zenkit/cordova-plugin-openwith",
     "version": "2.0.2",
     "description": "Cordova \"Open With\" plugin for iOS and Android",
     "license": "MIT",
     "author": "Zenkit Team <info@zenkit.com>",
-    "repository": "git@github.com:Zenkit/cordova-plugin-openwith.git",
+    "repository": "https://github.com/zenkit/cordova-plugin-openwith.git",
+    "publishConfig": {
+        "registry": "https://npm.pkg.github.com"
+    },
     "cordova": {
         "id": "cordova-plugin-openwith",
         "platforms": [
