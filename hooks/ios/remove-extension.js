@@ -4,7 +4,7 @@ const path = require('path');
 const fs = require('fs-extra');
 
 const { getProjectName, getProject } = require('./helpers');
-const { PLUGIN_ID, PBX_TARGET, PBX_GROUP_KEY } = require('./constants');
+const { PBX_TARGET, PBX_GROUP_KEY } = require('./constants');
 
 const removeExtensionFiles = async ({ projectDir }) => {
     const dir = path.join(projectDir, 'ShareExtension');
