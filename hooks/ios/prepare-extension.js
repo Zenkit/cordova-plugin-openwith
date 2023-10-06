@@ -4,48 +4,51 @@ const path = require('path');
 const fs = require('fs-extra');
 const plist = require('plist');
 
-const { PluginError, getProjectName, getProject, getBuildConfig } = require('./helpers');
+const { PluginError, getXcodeProject, getBuildConfig } = require('./helpers');
 const { PLUGIN_ID, BUNDLE_SUFFIX, PBX_TARGET, PBX_GROUP_KEY } = require('./constants');
 
-const replaceBuildProperties = async function (string, { projectDir, projectName }) {
-    const regex = /\$\((\w+)\)/;
-    if (regex.test(string) === false) {
-        return string;
-    }
-    const project = await getProject({ projectDir, projectName });
-    return string.replace(regex, (_, property) => project.xcode.getBuildProperty(property, undefined, projectName));
-};
+const getProjectName = project => path.basename(project.xcode_path);
+function getBuildProperty(project, property, build) {
+    const projectName = getProjectName(project);
+    return project.xcode.getBuildProperty(property, build, projectName);
+}
 
-const getProjectInfo = async ({ projectDir, projectName }) => {
-    const file = path.join(projectDir, projectName, `${projectName}-Info.plist`);
-    const info = plist.parse(await fs.readFile(file, 'utf-8'));
+const buildPropertiesRegExp = /\$\((\w+)\)/;
+function replaceBuildProperties(string, project) {
+    return string.replace(buildPropertiesRegExp, (_, property) => getBuildProperty(project, property));
+}
 
-    const CFBundleIdentifier = await replaceBuildProperties(info.CFBundleIdentifier, { projectDir, projectName });
+async function getProjectInfo({ project }) {
+    const projectName = getProjectName(project);
+    const file = path.join(project.xcode_path, `${projectName}-Info.plist`);
+    const info = await plist.parse(await fs.readFile(file, 'utf-8'));
+    const CFBundleIdentifier = replaceBuildProperties(info.CFBundleIdentifier, project);
     return { ...info, CFBundleIdentifier };
-};
+}
 
-const getPluginConfig = async ({ ctx }) => {
+async function getPluginConfig({ ctx }) {
     const plugins = await ctx.cordova.projectMetadata.getPlugins(ctx.opts.projectRoot);
 
     const plugin = plugins.find(plugin => plugin.name === PLUGIN_ID);
     if (!plugin) {
-        throw PluginError(`Couldn't find "${PLUGIN_ID}".`);
+        throw new PluginError(`Couldn't find "${PLUGIN_ID}".`);
     }
 
-    return plugin.variables.reduce((acc, { name, value }) => {
-        acc[name] = value;
-        return acc;
-    }, {});
-};
+    const config = {};
+    for (const { name, value } of plugin.variables) {
+        config[name] = value;
+    }
+
+    return config;
+}
 
 const buildExtensionIdentifier = ({ projectInfo }) => projectInfo.CFBundleIdentifier + BUNDLE_SUFFIX;
 const buildGroupIdentifier = ({ projectInfo }) => `group.${projectInfo.CFBundleIdentifier}${BUNDLE_SUFFIX}`;
-
-const copyExtensionFiles = async ({ projectDir, pluginConfig, projectInfo }) => {
+async function copyExtensionFiles({ project, pluginConfig, projectInfo }) {
     const srcDir = path.join(__dirname, '../../src/ios/ShareExtension');
     const files = await fs.readdir(srcDir);
 
-    const targetDir = path.join(projectDir, 'ShareExtension');
+    const targetDir = path.join(project.projectDir, 'ShareExtension');
     await fs.ensureDir(targetDir);
 
     const bundleIdentifier = buildExtensionIdentifier({ projectInfo });
@@ -69,9 +72,9 @@ const copyExtensionFiles = async ({ projectDir, pluginConfig, projectInfo }) => 
 
     console.log(`\tCopied ${files.length} extension files to project.`);
     return files;
-};
+}
 
-const getPbxTarget = ({ project }) => {
+function getPbxTarget({ project }) {
     const uuid = project.xcode.findTargetKey(`"${PBX_TARGET}"`);
     if (uuid) {
         console.log(`\tUsing existing extension target "${uuid}"`);
@@ -93,10 +96,10 @@ const getPbxTarget = ({ project }) => {
 
     console.log(`\tCreated extension target ${traget.uuid}`);
     return traget;
-};
+}
 
 // Create a separate PBXGroup for the ShareExtensions files, name has to be unique and path must be in quotation marks
-const getPbxGroupKey = ({ project }) => {
+function getPbxGroupKey({ project }) {
     const existingKey = project.xcode.findPBXGroupKey({ path: PBX_GROUP_KEY });
     if (existingKey) {
         console.log(`\tUsing existing extension group "${existingKey}"`);
@@ -111,9 +114,9 @@ const getPbxGroupKey = ({ project }) => {
 
     console.log(`\tCreated extension group ${createdKey}.`);
     return createdKey;
-};
+}
 
-const addExtensionAttributes = ({ project, extensionTarget }) => {
+function addExtensionAttributes({ project, extensionTarget }) {
     const projectTarget = project.xcode.getFirstTarget();
 
     const { firstProject } = project.xcode.getFirstProject();
@@ -122,11 +125,11 @@ const addExtensionAttributes = ({ project, extensionTarget }) => {
         project.xcode.addTargetAttribute(key, value, extensionTarget);
     }
     console.log(`\tAdded ${attributes.length} attributes to extension.`);
-};
+}
 
-const updateExtensionBuildProperties = ({ project, extensionTarget, projectInfo, projectName, buildConfig }) => {
+function updateExtensionBuildProperties({ project, extensionTarget, projectInfo, buildConfig }) {
     const extensionTargetName = extensionTarget.pbxNativeTarget.name;
-    const updateBuildProperty = function (property, value) {
+    function updateBuildProperty(property, value) {
         if (value) {
             // NOTE: If a value contains whitespaces and isn't already wrapped,
             // wrap it with "" otherwise the build would fail.
@@ -134,7 +137,7 @@ const updateExtensionBuildProperties = ({ project, extensionTarget, projectInfo,
             project.xcode.updateBuildProperty(property, normalized, null, extensionTargetName);
             console.log('\tSet build property', property, 'to', normalized);
         }
-    };
+    }
 
     const bundleIdentifier = buildExtensionIdentifier({ projectInfo });
     updateBuildProperty('PRODUCT_BUNDLE_IDENTIFIER', bundleIdentifier);
@@ -142,7 +145,7 @@ const updateExtensionBuildProperties = ({ project, extensionTarget, projectInfo,
     const build = buildConfig.release ? 'Release' : 'Debug';
     const buildPropertiesToCopy = ['IPHONEOS_DEPLOYMENT_TARGET', 'TARGETED_DEVICE_FAMILY'];
     for (const property of buildPropertiesToCopy) {
-        const value = project.xcode.getBuildProperty(property, build, projectName);
+        const value = getBuildProperty(project, property, build);
         updateBuildProperty(property, value);
     }
 
@@ -160,18 +163,16 @@ const updateExtensionBuildProperties = ({ project, extensionTarget, projectInfo,
     for (const [property, key] of Object.entries(buildPropertyToBuildConfigKeyMap)) {
         updateBuildProperty(property, buildConfig[key]);
     }
-};
+}
 
-const updateCodeSignStyle = function ({ project, extensionTarget, codeSignStyle }) {
+function updateCodeSignStyle({ project, extensionTarget, codeSignStyle }) {
     const extensionTargetName = extensionTarget.pbxNativeTarget.name;
     project.xcode.updateBuildProperty('CODE_SIGN_STYLE', codeSignStyle, extensionTargetName);
     project.xcode.addTargetAttribute('ProvisioningStyle', codeSignStyle, extensionTarget);
     console.log('\tSet code signing style to', codeSignStyle);
-};
+}
 
-const updateProject = async ({ projectDir, projectName, extensionFiles, projectInfo, buildConfig }) => {
-    const project = await getProject({ projectDir, projectName });
-
+async function updateProject({ project, extensionFiles, projectInfo, buildConfig }) {
     const groupKey = getPbxGroupKey({ project });
     const extensionTarget = getPbxTarget({ project });
     for (const extensionFile of extensionFiles) {
@@ -186,7 +187,7 @@ const updateProject = async ({ projectDir, projectName, extensionFiles, projectI
     }
 
     await addExtensionAttributes({ project, extensionTarget });
-    await updateExtensionBuildProperties({ project, extensionTarget, projectInfo, projectName, buildConfig });
+    await updateExtensionBuildProperties({ project, extensionTarget, projectInfo, buildConfig });
 
     // NOTE: Update code signing style
     // https://github.com/apache/cordova-ios/blob/e92f653/bin/templates/scripts/cordova/lib/build.js#L188-L194
@@ -199,14 +200,14 @@ const updateProject = async ({ projectDir, projectName, extensionFiles, projectI
     await project.write();
 
     console.log('\tAdded extension to project.');
-};
+}
 
-const updateProjectEntitlements = async ({ projectDir, projectName, projectInfo }) => {
+const updateProjectEntitlements = async ({ project, projectInfo }) => {
     const entitlementKey = 'com.apple.security.application-groups';
     const groupIdentifier = buildGroupIdentifier({ projectInfo });
 
     const promises = ['Release', 'Debug'].map(async type => {
-        const file = path.join(projectDir, projectName, `Entitlements-${type}.plist`);
+        const file = path.join(project.xcode_path, `Entitlements-${type}.plist`);
         const entitlements = plist.parse(await fs.readFile(file, 'utf-8'));
 
         const groups = entitlements[entitlementKey] || [];
@@ -226,15 +227,13 @@ const updateProjectEntitlements = async ({ projectDir, projectName, projectInfo 
 module.exports = async ctx => {
     console.log('ShareExtension after prepare hook:');
 
-    const projectDir = path.join(ctx.opts.projectRoot, 'platforms', 'ios');
-    const projectName = await getProjectName({ projectDir });
-
+    const project = await getXcodeProject({ ctx });
     const buildConfig = await getBuildConfig({ ctx });
     const pluginConfig = await getPluginConfig({ ctx });
-    const projectInfo = await getProjectInfo({ projectDir, projectName });
+    const projectInfo = await getProjectInfo({ project });
 
-    const extensionFiles = await copyExtensionFiles({ projectDir, pluginConfig, projectInfo });
+    const extensionFiles = await copyExtensionFiles({ project, pluginConfig, projectInfo });
 
-    await updateProject({ projectDir, projectName, extensionFiles, projectInfo, buildConfig });
-    await updateProjectEntitlements({ projectDir, projectName, projectInfo });
+    await updateProject({ project, extensionFiles, projectInfo, buildConfig });
+    await updateProjectEntitlements({ project, projectInfo });
 };

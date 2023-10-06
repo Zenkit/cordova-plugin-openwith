@@ -5,30 +5,30 @@ const fs = require('fs-extra');
 
 const { PLUGIN_ID } = require('./constants');
 
-const PluginError = message => new Error(`"${PLUGIN_ID}": \x1b[1m\x1b[31m${message}\x1b[0m`);
+class PluginError extends Error {
+    constructor(message) {
+        super(`\x1b[1m\x1b[31m${message}\x1b[0m`);
+        this.name = PLUGIN_ID;
+    }
+}
 
-const getProjectName = async ({ projectDir }) => {
-    const files = await fs.readdir(projectDir);
+async function getXcodeProject({ ctx }) {
+    const { parse } = ctx.requireCordovaModule('cordova-ios/lib/projectFile');
+    const root = path.join(ctx.opts.projectRoot, 'platforms', 'ios');
 
-    const ext = '.xcodeproj';
-    const xcodeproj = files.find(file => path.extname(file) === ext);
+    const files = await fs.readdir(root);
+    const xcodeproj = files.find(file => path.extname(file) === '.xcodeproj');
     if (!xcodeproj) {
-        throw PluginError(`Couldn't find xcode project ar ${projectDir}`);
+        throw new PluginError(`Couldn't find xcode project ar ${root}`);
     }
 
-    return path.basename(xcodeproj, ext);
-};
-
-const getProject = ({ projectDir, projectName }) => {
-    // eslint-disable-next-line global-require
-    var { parse } = require(path.join(projectDir, '/cordova/lib/projectFile.js'));
-    const pbxproj = path.join(projectDir, `${projectName}.xcodeproj`, 'project.pbxproj');
-    return parse({ root: projectDir, pbxproj });
-};
+    const pbxproj = path.join(root, xcodeproj, 'project.pbxproj');
+    return parse({ root, pbxproj });
+}
 
 // NOTE: Get the build config the same way the ios compile function does.
-// https://github.com/apache/cordova-ios/blob/e92f653/bin/templates/scripts/cordova/lib/build.js#L104-L121
-const getBuildConfig = async function ({ ctx }) {
+// https://github.com/apache/cordova-ios/blob/07383c1/lib/build.js#L103-L120
+async function getBuildConfig({ ctx }) {
     const { options } = ctx.opts;
     const configPath = options.buildConfig;
     if (!configPath) {
@@ -70,6 +70,6 @@ const getBuildConfig = async function ({ ctx }) {
             return result;
         }, {}),
     };
-};
+}
 
-module.exports = { PluginError, getProjectName, getProject, getBuildConfig };
+module.exports = { PluginError, getXcodeProject, getBuildConfig };

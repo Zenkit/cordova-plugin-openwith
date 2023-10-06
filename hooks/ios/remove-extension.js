@@ -3,17 +3,15 @@
 const path = require('path');
 const fs = require('fs-extra');
 
-const { getProjectName, getProject } = require('./helpers');
+const { getXcodeProject } = require('./helpers');
 const { PBX_TARGET, PBX_GROUP_KEY } = require('./constants');
 
-const removeExtensionFiles = async ({ projectDir }) => {
-    const dir = path.join(projectDir, 'ShareExtension');
+async function removeExtensionFiles({ project }) {
+    const dir = path.join(project.projectDir, 'ShareExtension');
     await fs.remove(dir);
-};
+}
 
-const updateProject = async ({ projectDir, projectName }) => {
-    const project = await getProject({ projectDir, projectName });
-
+async function updateProject({ project }) {
     const groupKey = project.xcode.findPBXGroupKey({ path: PBX_GROUP_KEY });
     if (!groupKey) {
         return;
@@ -36,14 +34,12 @@ const updateProject = async ({ projectDir, projectName }) => {
     }
 
     await project.write();
-};
+}
 
-module.exports = async ctx => {
-    const projectDir = path.join(ctx.opts.projectRoot, 'platforms', 'ios');
-    await removeExtensionFiles({ projectDir });
-
-    const projectName = await getProjectName({ projectDir });
-    await updateProject({ projectDir, projectName });
+module.exports = async function (ctx) {
+    const project = await getXcodeProject({ ctx });
+    await removeExtensionFiles({ project });
+    await updateProject({ project });
 
     console.log('Removed ShareExtension from project.');
 };
