@@ -42,13 +42,14 @@ async function getPluginConfig({ ctx }) {
     return config;
 }
 
+const EXTENSION_DIRECTORY = 'ShareExtension';
 const buildExtensionIdentifier = ({ projectInfo }) => projectInfo.CFBundleIdentifier + BUNDLE_SUFFIX;
 const buildGroupIdentifier = ({ projectInfo }) => `group.${projectInfo.CFBundleIdentifier}${BUNDLE_SUFFIX}`;
 async function copyExtensionFiles({ project, pluginConfig, projectInfo }) {
-    const srcDir = path.join(__dirname, '../../src/ios/ShareExtension');
+    const srcDir = path.join(__dirname, '../../src/ios', EXTENSION_DIRECTORY);
     const files = await fs.readdir(srcDir);
 
-    const targetDir = path.join(project.projectDir, 'ShareExtension');
+    const targetDir = path.join(project.projectDir, EXTENSION_DIRECTORY);
     await fs.ensureDir(targetDir);
 
     const bundleIdentifier = buildExtensionIdentifier({ projectInfo });
@@ -127,7 +128,16 @@ function addExtensionAttributes({ project, extensionTarget }) {
     console.log(`\tAdded ${attributes.length} attributes to extension.`);
 }
 
-function updateExtensionBuildProperties({ project, extensionTarget, projectInfo, buildConfig }) {
+function getCodeSignEntitlements({ extensionFiles }) {
+    const file = extensionFiles.find(file => path.extname(file) === '.entitlements');
+    if (file) {
+        return path.join(EXTENSION_DIRECTORY, file);
+    }
+
+    throw new PluginError('Missing code sign entitlements file for share extension.');
+}
+
+function updateExtensionBuildProperties({ project, extensionTarget, projectInfo, buildConfig, extensionFiles }) {
     const extensionTargetName = extensionTarget.pbxNativeTarget.name;
     function updateBuildProperty(property, value) {
         if (value) {
@@ -141,6 +151,9 @@ function updateExtensionBuildProperties({ project, extensionTarget, projectInfo,
 
     const bundleIdentifier = buildExtensionIdentifier({ projectInfo });
     updateBuildProperty('PRODUCT_BUNDLE_IDENTIFIER', bundleIdentifier);
+
+    const codeSignEntitlements = getCodeSignEntitlements({ extensionFiles });
+    updateBuildProperty('CODE_SIGN_ENTITLEMENTS', codeSignEntitlements);
 
     const build = buildConfig.release ? 'Release' : 'Debug';
     const buildPropertiesToCopy = ['IPHONEOS_DEPLOYMENT_TARGET', 'TARGETED_DEVICE_FAMILY'];
@@ -187,7 +200,7 @@ async function updateProject({ project, extensionFiles, projectInfo, buildConfig
     }
 
     await addExtensionAttributes({ project, extensionTarget });
-    await updateExtensionBuildProperties({ project, extensionTarget, projectInfo, buildConfig });
+    await updateExtensionBuildProperties({ project, extensionTarget, projectInfo, buildConfig, extensionFiles });
 
     // NOTE: Update code signing style
     // https://github.com/apache/cordova-ios/blob/e92f653/bin/templates/scripts/cordova/lib/build.js#L188-L194
