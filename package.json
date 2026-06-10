@@ -1,6 +1,6 @@
 {
     "name": "@zenkit-dev/cordova-plugin-openwith",
-    "version": "2.0.2-dev.16",
+    "version": "2.0.2-dev.17",
     "description": "Cordova \"Open With\" plugin for iOS and Android",
     "license": "MIT",
     "author": "Zenkit Team <info@zenkit.com>",

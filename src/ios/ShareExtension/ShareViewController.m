@@ -357,7 +357,8 @@
 // This is called at the point where the Post dialog is about to be shown.
 // We use it to store the _hostBundleID
 - (void) willMoveToParentViewController: (UIViewController*)parent {
-    NSString *hostBundleID = [parent valueForKey:(@"_hostBundleID")];
+    NSString *hostBundleID = nil;
+    @try { hostBundleID = [parent valueForKey:@"_hostBundleID"]; } @catch (...) {}
     self.backURL = [self backURLFromBundleID:hostBundleID];
 }
 
