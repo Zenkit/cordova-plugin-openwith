@@ -28,17 +28,16 @@
 //
 
 #import <UIKit/UIKit.h>
-#import <Social/Social.h>
+#import <MobileCoreServices/MobileCoreServices.h>
 #import "ShareViewController.h"
 
-@interface ShareViewController : SLComposeServiceViewController {
-    int _verbosityLevel;
-    NSUserDefaults *_userDefaults;
-    NSString *_backURL;
-}
+// The extension has no UI. It copies the shared items into the App Group
+// container, stores them in the shared user defaults and opens the Cordova
+// app with its URL scheme.
+@interface ShareViewController : UIViewController
 @property (nonatomic) int verbosityLevel;
 @property (nonatomic,retain) NSUserDefaults *userDefaults;
-@property (nonatomic,retain) NSString *backURL;
+@property (nonatomic) BOOL didLoadAttachments;
 @end
 
 /*
@@ -52,10 +51,6 @@
 
 @implementation ShareViewController
 
-@synthesize verbosityLevel = _verbosityLevel;
-@synthesize userDefaults = _userDefaults;
-@synthesize backURL = _backURL;
-
 - (void) log:(int)level message:(NSString*)message {
     if (level >= self.verbosityLevel) {
         NSLog(@"[ShareViewController.m]%@", message);
@@ -68,212 +63,320 @@
 
 - (void) setup {
     self.userDefaults = [[NSUserDefaults alloc] initWithSuiteName:SHAREEXT_GROUP_IDENTIFIER];
-    self.verbosityLevel = [self.userDefaults integerForKey:@"verbosityLevel"];
+    self.verbosityLevel = (int)[self.userDefaults integerForKey:@"verbosityLevel"];
     [self debug:@"[setup]"];
 }
 
-- (BOOL) isContentValid {
-    return YES;
+- (void) viewDidLoad {
+    [super viewDidLoad];
+    [self setup];
+    [self debug:@"[viewDidLoad]"];
 }
 
-- (void) openURL:(nonnull NSURL *)url {
+- (void) viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    [self debug:@"[viewDidAppear]"];
+    if (self.didLoadAttachments) {
+        return;
+    }
+    self.didLoadAttachments = YES;
+    [self loadAttachments];
+}
 
-    SEL selector = NSSelectorFromString(@"openURL:options:completionHandler:");
-
-    UIResponder* responder = self;
-    while ((responder = [responder nextResponder]) != nil) {
-        NSLog(@"responder = %@", responder);
-        if([responder respondsToSelector:selector] == true) {
-            NSMethodSignature *methodSignature = [responder methodSignatureForSelector:selector];
-            NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:methodSignature];
-
-            // Arguments
-            void (^completion)(BOOL success) = ^void(BOOL success) {
-                NSLog(@"Completions block: %i", success);
-            };
-            if (@available(iOS 13.0, *)) {
-                UISceneOpenExternalURLOptions * options = [[UISceneOpenExternalURLOptions alloc] init];
-                options.universalLinksOnly = false;
-                
-                [invocation setTarget: responder];
-                [invocation setSelector: selector];
-                [invocation setArgument: &url atIndex: 2];
-                [invocation setArgument: &options atIndex:3];
-                [invocation setArgument: &completion atIndex: 4];
-                [invocation invoke];
-                break;
-            } else {
-                NSDictionary<NSString *, id> *options = [NSDictionary dictionary];
-                
-                [invocation setTarget: responder];
-                [invocation setSelector: selector];
-                [invocation setArgument: &url atIndex: 2];
-                [invocation setArgument: &options atIndex:3];
-                [invocation setArgument: &completion atIndex: 4];
-                [invocation invoke];
-                break;
-            }
+- (void) loadAttachments {
+    NSMutableArray<NSItemProvider*> *itemProviders = [NSMutableArray array];
+    for (NSExtensionItem *extensionItem in self.extensionContext.inputItems) {
+        if (extensionItem.attachments != nil) {
+            [itemProviders addObjectsFromArray:extensionItem.attachments];
         }
+    }
+
+    NSURL *directory = [self createSharedDirectory];
+    NSMutableArray *items = [NSMutableArray arrayWithCapacity:itemProviders.count];
+    for (NSUInteger i = 0; i < itemProviders.count; i++) {
+        [items addObject:[NSNull null]];
+    }
+
+    // NOTE: The item providers call their completion handlers on arbitrary queues,
+    // so the items are only modified on the main queue. They keep the order of the attachments.
+    dispatch_group_t group = dispatch_group_create();
+    [itemProviders enumerateObjectsUsingBlock:^(NSItemProvider *itemProvider, NSUInteger index, BOOL *stop) {
+        dispatch_group_enter(group);
+        [self loadItemProvider:itemProvider directory:directory completion:^(NSDictionary *item) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (item != nil) {
+                    items[index] = item;
+                }
+                dispatch_group_leave(group);
+            });
+        }];
+    }];
+
+    dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+        [items removeObjectIdenticalTo:[NSNull null]];
+        [self sendResults:items directory:directory];
+    });
+}
+
+// Calls the completion exactly once, with nil if the item couldn't be loaded.
+- (void) loadItemProvider:(NSItemProvider*)itemProvider directory:(NSURL*)directory completion:(void (^)(NSDictionary *item))completion {
+    NSString *urlUTI = (NSString*)kUTTypeURL;
+    NSString *fileURLUTI = (NSString*)kUTTypeFileURL;
+    NSString *plainTextUTI = (NSString*)kUTTypePlainText;
+    NSString *imageUTI = (NSString*)kUTTypeImage;
+    NSString *dataUTI = (NSString*)kUTTypeData;
+
+    [self debug:[NSString stringWithFormat:@"item provider registered identifiers = %@", itemProvider.registeredTypeIdentifiers]];
+
+    BOOL conformsToFileURL = [itemProvider hasItemConformingToTypeIdentifier:fileURLUTI];
+
+    // Handle URLs but ignore file URLs
+    if (!conformsToFileURL && [itemProvider hasItemConformingToTypeIdentifier:urlUTI]) {
+        [self debug:[NSString stringWithFormat:@"loading item as \"%@\"", urlUTI]];
+        [itemProvider loadItemForTypeIdentifier:urlUTI options:nil completionHandler:^(NSURL *url, NSError *error) {
+            NSString *text = [url isKindOfClass:[NSURL class]] ? url.absoluteString : nil;
+            completion([self textItem:text itemProvider:itemProvider defaultUti:urlUTI]);
+        }];
+    }
+    // Handle plain text, ignore file URLs
+    else if (!conformsToFileURL && [itemProvider hasItemConformingToTypeIdentifier:plainTextUTI]) {
+        [self debug:[NSString stringWithFormat:@"loading item as \"%@\"", plainTextUTI]];
+        [itemProvider loadItemForTypeIdentifier:plainTextUTI options:nil completionHandler:^(NSString *text, NSError *error) {
+            completion([self textItem:([text isKindOfClass:[NSString class]] ? text : nil) itemProvider:itemProvider defaultUti:plainTextUTI]);
+        }];
+    }
+    // Handle images separately because some apps provide the image not as a file but as an UIImage (e.g. the screenshot editor)
+    else if ([itemProvider hasItemConformingToTypeIdentifier:imageUTI] && ![itemProvider hasRepresentationConformingToTypeIdentifier:imageUTI fileOptions:NSItemProviderFileOptionOpenInPlace]) {
+        [self debug:[NSString stringWithFormat:@"loading item as \"%@\"", imageUTI]];
+        [itemProvider loadItemForTypeIdentifier:imageUTI options:nil completionHandler:^(id<NSSecureCoding> item, NSError *error) {
+            NSObject *object = (NSObject*)item;
+            if ([object isKindOfClass:[NSURL class]] && ((NSURL*)object).isFileURL) {
+                completion([self fileItemFromURL:(NSURL*)object itemProvider:itemProvider directory:directory]);
+            } else if ([object isKindOfClass:[UIImage class]]) {
+                NSData *data = UIImagePNGRepresentation((UIImage*)object);
+                completion([self fileItemFromData:data uti:(NSString*)kUTTypePNG itemProvider:itemProvider directory:directory]);
+            } else if ([object isKindOfClass:[NSData class]]) {
+                NSString *uti = [self utiOfItemProvider:itemProvider defaultUti:imageUTI];
+                completion([self fileItemFromData:(NSData*)object uti:uti itemProvider:itemProvider directory:directory]);
+            } else {
+                [self warn:[NSString stringWithFormat:@"failed to load image: %@", error]];
+                completion(nil);
+            }
+        }];
+    }
+    // Handle any other data, load the file in place (or a copy of it if that isn't possible)
+    else if ([itemProvider hasItemConformingToTypeIdentifier:dataUTI]) {
+        [self debug:[NSString stringWithFormat:@"loading file in place as \"%@\"", dataUTI]];
+        [itemProvider loadInPlaceFileRepresentationForTypeIdentifier:dataUTI completionHandler:^(NSURL *fileURL, BOOL isInPlace, NSError *error) {
+            if (fileURL == nil) {
+                [self warn:[NSString stringWithFormat:@"failed to load file: %@", error]];
+            }
+            completion([self fileItemFromURL:fileURL itemProvider:itemProvider directory:directory]);
+        }];
+    }
+    else {
+        [self warn:@"unsupported item provider"];
+        completion(nil);
     }
 }
 
-- (void) didSelectPost {
+- (NSDictionary*) textItem:(NSString*)text itemProvider:(NSItemProvider*)itemProvider defaultUti:(NSString*)defaultUti {
+    if (text.length == 0) {
+        return nil;
+    }
+    NSString *uti = [self utiOfItemProvider:itemProvider defaultUti:defaultUti];
+    NSDictionary *item = @{
+        @"text": text,
+        @"uti": uti,
+        @"utis": itemProvider.registeredTypeIdentifiers,
+        @"type": [self mimeTypeFromUti:uti],
+    };
+    [self debug:[NSString stringWithFormat:@"loaded text item = %@", item]];
+    return item;
+}
 
-    [self setup];
-    [self debug:@"[didSelectPost]"];
+- (NSDictionary*) fileItemWithURL:(NSURL*)fileURL name:(NSString*)name uti:(NSString*)uti itemProvider:(NSItemProvider*)itemProvider {
+    NSDictionary *item = @{
+        @"uti": uti,
+        @"name": name,
+        @"type": [self mimeTypeFromUti:uti],
+        @"uri": fileURL.absoluteString,
+        @"utis": itemProvider.registeredTypeIdentifiers,
+    };
+    [self debug:[NSString stringWithFormat:@"loaded file item = %@", item]];
+    return item;
+}
 
-    // This is called after the user selects Post. Do the upload of contentText and/or NSExtensionContext attachments.
-    for (NSItemProvider* itemProvider in ((NSExtensionItem*)self.extensionContext.inputItems[0]).attachments) {
-        
-        if ([itemProvider hasItemConformingToTypeIdentifier:SHAREEXT_UNIFORM_TYPE_IDENTIFIER]) {
-            [self debug:[NSString stringWithFormat:@"item provider = %@", itemProvider]];
-            
-            [itemProvider loadItemForTypeIdentifier:SHAREEXT_UNIFORM_TYPE_IDENTIFIER options:nil completionHandler: ^(id<NSSecureCoding> item, NSError *error) {
+// Copy the file to the shared directory so the Cordova app has access to it.
+// The URL is only valid until the item provider's completion handler returns.
+- (NSDictionary*) fileItemFromURL:(NSURL*)fileURL itemProvider:(NSItemProvider*)itemProvider directory:(NSURL*)directory {
+    if (fileURL == nil || directory == nil) {
+        return nil;
+    }
 
-                NSData *data = [[NSData alloc] init];
-                if([(NSObject*)item isKindOfClass:[NSURL class]]) {
-                    data = [NSData dataWithContentsOfURL:(NSURL*)item];
-                }
-                if([(NSObject*)item isKindOfClass:[UIImage class]]) {
-                    data = UIImagePNGRepresentation((UIImage*)item);
-                }
+    // NOTE: Use the name of the provided file, the suggested name might not match its type.
+    NSString *fileName = [self sanitizeFileName:fileURL.lastPathComponent];
+    NSURL *sharedFileURL = [self sharedFileURLWithName:fileName directory:directory];
 
-                NSString *suggestedName = @"";
-                if ([itemProvider respondsToSelector:NSSelectorFromString(@"getSuggestedName")]) {
-                    suggestedName = [itemProvider valueForKey:@"suggestedName"];
-                }
+    BOOL isSecurityScoped = [fileURL startAccessingSecurityScopedResource];
+    NSError *error = nil;
+    BOOL copied = [[NSFileManager defaultManager] copyItemAtURL:fileURL toURL:sharedFileURL error:&error];
+    if (isSecurityScoped) {
+        [fileURL stopAccessingSecurityScopedResource];
+    }
+    if (!copied) {
+        [self warn:[NSString stringWithFormat:@"failed to copy file from \"%@\" to \"%@\": %@", fileURL, sharedFileURL, error]];
+        return nil;
+    }
 
-                NSString *uti = @"";
-                NSArray<NSString *> *utis = [NSArray new];
-                if ([itemProvider.registeredTypeIdentifiers count] > 0) {
-                    uti = itemProvider.registeredTypeIdentifiers[0];
-                    utis = itemProvider.registeredTypeIdentifiers;
-                }
-                else {
-                    uti = SHAREEXT_UNIFORM_TYPE_IDENTIFIER;
-                }
+    NSString *uti = [self utiOfItemProvider:itemProvider defaultUti:(NSString*)kUTTypeData];
+    return [self fileItemWithURL:sharedFileURL name:fileName uti:uti itemProvider:itemProvider];
+}
 
-                // Spool the payload to a file in the App Group container
-                // instead of storing the raw bytes in NSUserDefaults.
-                // iOS 13+ caps CFPreferences/NSUserDefaults at 4MB per
-                // domain; anything larger throws and corrupts the suite
-                // until the app is force-quit. See #79.
-                NSString *dataPath = nil;
-                NSURL *containerURL = [[NSFileManager defaultManager] containerURLForSecurityApplicationGroupIdentifier:SHAREEXT_GROUP_IDENTIFIER];
-                if (containerURL != nil && data.length > 0) {
-                    NSString *fileName = [[NSUUID UUID] UUIDString];
-                    NSURL *dataFileURL = [containerURL URLByAppendingPathComponent:fileName];
-                    NSError *writeError = nil;
-                    if ([data writeToURL:dataFileURL options:NSDataWritingAtomic error:&writeError]) {
-                        dataPath = [dataFileURL path];
-                    } else {
-                        [self debug:[NSString stringWithFormat:@"[didSelectPost] Failed to spool payload: %@", writeError]];
-                    }
-                }
+- (NSDictionary*) fileItemFromData:(NSData*)data uti:(NSString*)uti itemProvider:(NSItemProvider*)itemProvider directory:(NSURL*)directory {
+    if (data == nil || directory == nil) {
+        return nil;
+    }
 
-                NSMutableDictionary *dict = [@{
-                    @"text": self.contentText,
-                    @"backURL": self.backURL,
-                    @"uti": uti,
-                    @"utis": utis,
-                    @"name": suggestedName
-                } mutableCopy];
-                if (dataPath != nil) {
-                    dict[@"dataPath"] = dataPath;
-                } else {
-                    // Fall back to inline bytes for tiny payloads where
-                    // the container URL wasn't available. Keeps behavior
-                    // unchanged for the happy-path small-file case.
-                    dict[@"data"] = data;
-                }
-                [self.userDefaults setObject:dict forKey:@"image"];
-                [self.userDefaults synchronize];
+    NSString *baseName = [self sanitizeFileName:itemProvider.suggestedName.stringByDeletingPathExtension];
+    if (baseName.length == 0) {
+        baseName = @"image";
+    }
+    NSString *extension = [self extensionFromUti:uti];
+    NSString *fileName = extension.length > 0 ? [baseName stringByAppendingPathExtension:extension] : nil;
+    if (fileName == nil) {
+        fileName = baseName;
+    }
+    NSURL *sharedFileURL = [self sharedFileURLWithName:fileName directory:directory];
 
-                // Emit a URL that opens the cordova app
-                NSString *url = [NSString stringWithFormat:@"%@://image", SHAREEXT_URL_SCHEME];
+    NSError *error = nil;
+    if (![data writeToURL:sharedFileURL options:NSDataWritingAtomic error:&error]) {
+        [self warn:[NSString stringWithFormat:@"failed to write file \"%@\": %@", sharedFileURL, error]];
+        return nil;
+    }
 
-                // Not allowed:
-                // [[UIApplication sharedApplication] openURL:[NSURL URLWithString:url]];
-                
-                // Crashes:
-                // [self.extensionContext openURL:[NSURL URLWithString:url] completionHandler:nil];
-                
-                // From https://stackoverflow.com/a/25750229/2343390
-                // Reported not to work since iOS 8.3
-                // NSURLRequest *request = [[NSURLRequest alloc] initWithURL:[NSURL URLWithString:url]];
-                // [self.webView loadRequest:request];
-                
-                [self openURL:[NSURL URLWithString:url]];
+    return [self fileItemWithURL:sharedFileURL name:fileName uti:uti itemProvider:itemProvider];
+}
 
-                // Inform the host that we're done, so it un-blocks its UI.
-                [self.extensionContext completeRequestReturningItems:@[] completionHandler:nil];
-            }];
+- (NSString*) sanitizeFileName:(NSString*)fileName {
+    if (fileName == nil) {
+        return nil;
+    }
+    NSCharacterSet *separators = [NSCharacterSet characterSetWithCharactersInString:@"/:"];
+    return [[fileName componentsSeparatedByCharactersInSet:separators] componentsJoinedByString:@"_"];
+}
 
-            return;
-        }
+// Every share gets its own directory in the App Group container,
+// the Cordova app removes it once it isn't needed anymore.
+- (NSURL*) createSharedDirectory {
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    NSURL *containerURL = [fileManager containerURLForSecurityApplicationGroupIdentifier:SHAREEXT_GROUP_IDENTIFIER];
+    if (containerURL == nil) {
+        [self error:[NSString stringWithFormat:@"App Group \"%@\" is not available", SHAREEXT_GROUP_IDENTIFIER]];
+        return nil;
+    }
+
+    NSURL *directory = [[containerURL URLByAppendingPathComponent:SHAREEXT_SHARED_DIRECTORY isDirectory:YES]
+                        URLByAppendingPathComponent:[[NSUUID UUID] UUIDString] isDirectory:YES];
+    NSError *error = nil;
+    if (![fileManager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:&error]) {
+        [self error:[NSString stringWithFormat:@"failed to create directory \"%@\": %@", directory, error]];
+        return nil;
+    }
+    return directory;
+}
+
+// Prefix the file name to avoid overwriting files with the same name.
+- (NSURL*) sharedFileURLWithName:(NSString*)fileName directory:(NSURL*)directory {
+    NSString *uuid = [[NSUUID UUID] UUIDString];
+    NSString *sharedFileName = [uuid stringByAppendingPathExtension:fileName];
+    return [directory URLByAppendingPathComponent:(sharedFileName != nil ? sharedFileName : uuid) isDirectory:NO];
+}
+
+- (void) sendResults:(NSArray*)items directory:(NSURL*)directory {
+    NSArray *fileItems = [items filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"uri != nil"]];
+    if (directory != nil && fileItems.count == 0) {
+        [[NSFileManager defaultManager] removeItemAtURL:directory error:nil];
+    }
+
+    if (items.count > 0) {
+        [self.userDefaults setObject:@{ @"items": items } forKey:@"shared"];
+        [self.userDefaults synchronize];
+
+        // Emit a URL that opens the cordova app
+        NSString *url = [NSString stringWithFormat:@"%@://shared", SHAREEXT_URL_SCHEME];
+        [self openURL:[NSURL URLWithString:url]];
+    } else {
+        [self warn:@"[sendResults] nothing to share"];
     }
 
     // Inform the host that we're done, so it un-blocks its UI.
     [self.extensionContext completeRequestReturningItems:@[] completionHandler:nil];
 }
 
-- (NSArray*) configurationItems {
-    // To add configuration options via table cells at the bottom of the sheet, return an array of SLComposeSheetConfigurationItem here.
-    return @[];
+// Extensions can't use UIApplication.sharedApplication, so the URL is opened by
+// the first responder in the chain that is able to (the scene or the application).
+- (void) openURL:(nonnull NSURL *)url {
+    SEL selector = NSSelectorFromString(@"openURL:options:completionHandler:");
+
+    UIResponder *responder = self;
+    while ((responder = [responder nextResponder]) != nil) {
+        if (![responder respondsToSelector:selector]) {
+            continue;
+        }
+
+        // NOTE: The options have a different type depending on the receiver.
+        id options = nil;
+        if ([responder isKindOfClass:[UIApplication class]]) {
+            options = @{};
+        } else if (@available(iOS 13.0, *)) {
+            if ([responder isKindOfClass:[UIScene class]]) {
+                options = [[UISceneOpenExternalURLOptions alloc] init];
+            }
+        }
+        if (options == nil) {
+            continue;
+        }
+
+        [self debug:[NSString stringWithFormat:@"[openURL] using responder %@", responder]];
+        void (^completion)(BOOL success) = ^void(BOOL success) {
+            NSLog(@"[ShareViewController.m][openURL] success: %i", success);
+        };
+
+        NSMethodSignature *methodSignature = [responder methodSignatureForSelector:selector];
+        NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:methodSignature];
+        [invocation setTarget:responder];
+        [invocation setSelector:selector];
+        [invocation setArgument:&url atIndex:2];
+        [invocation setArgument:&options atIndex:3];
+        [invocation setArgument:&completion atIndex:4];
+        [invocation invoke];
+        return;
+    }
+
+    [self warn:@"[openURL] no responder can open URLs"];
 }
 
-- (NSString*) backURLFromBundleID: (NSString*)bundleId {
-    if (bundleId == nil) return nil;
-    // App Store - com.apple.AppStore
-    if ([bundleId isEqualToString:@"com.apple.AppStore"]) return @"itms-apps://";
-    // Calculator - com.apple.calculator
-    // Calendar - com.apple.mobilecal
-    // Camera - com.apple.camera
-    // Clock - com.apple.mobiletimer
-    // Compass - com.apple.compass
-    // Contacts - com.apple.MobileAddressBook
-    // FaceTime - com.apple.facetime
-    // Find Friends - com.apple.mobileme.fmf1
-    // Find iPhone - com.apple.mobileme.fmip1
-    // Game Center - com.apple.gamecenter
-    // Health - com.apple.Health
-    // iBooks - com.apple.iBooks
-    // iTunes Store - com.apple.MobileStore
-    // Mail - com.apple.mobilemail - message://
-    if ([bundleId isEqualToString:@"com.apple.mobilemail"]) return @"message://";
-    // Maps - com.apple.Maps - maps://
-    if ([bundleId isEqualToString:@"com.apple.Maps"]) return @"maps://";
-    // Messages - com.apple.MobileSMS
-    // Music - com.apple.Music
-    // News - com.apple.news - applenews://
-    if ([bundleId isEqualToString:@"com.apple.news"]) return @"applenews://";
-    // Notes - com.apple.mobilenotes - mobilenotes://
-    if ([bundleId isEqualToString:@"com.apple.mobilenotes"]) return @"mobilenotes://";
-    // Phone - com.apple.mobilephone
-    // Photos - com.apple.mobileslideshow
-    if ([bundleId isEqualToString:@"com.apple.mobileslideshow"]) return @"photos-redirect://";
-    // Podcasts - com.apple.podcasts
-    // Reminders - com.apple.reminders - x-apple-reminder://
-    if ([bundleId isEqualToString:@"com.apple.reminders"]) return @"x-apple-reminder://";
-    // Safari - com.apple.mobilesafari
-    // Settings - com.apple.Preferences
-    // Stocks - com.apple.stocks
-    // Tips - com.apple.tips
-    // Videos - com.apple.videos - videos://
-    if ([bundleId isEqualToString:@"com.apple.videos"]) return @"videos://";
-    // Voice Memos - com.apple.VoiceMemos - voicememos://
-    if ([bundleId isEqualToString:@"com.apple.VoiceMemos"]) return @"voicememos://";
-    // Wallet - com.apple.Passbook
-    // Watch - com.apple.Bridge
-    // Weather - com.apple.weather
-    return @"";
+- (NSString*) utiOfItemProvider:(NSItemProvider*)itemProvider defaultUti:(NSString*)defaultUti {
+    NSString *uti = itemProvider.registeredTypeIdentifiers.firstObject;
+    return uti != nil ? uti : defaultUti;
 }
 
-// This is called at the point where the Post dialog is about to be shown.
-// We use it to store the _hostBundleID
-- (void) willMoveToParentViewController: (UIViewController*)parent {
-    NSString *hostBundleID = [parent valueForKey:(@"_hostBundleID")];
-    self.backURL = [self backURLFromBundleID:hostBundleID];
+- (NSString *)mimeTypeFromUti: (NSString*)uti {
+    if (uti == nil) {
+        return @"";
+    }
+    CFStringRef cret = UTTypeCopyPreferredTagWithClass((__bridge CFStringRef)uti, kUTTagClassMIMEType);
+    NSString *ret = (__bridge_transfer NSString *)cret;
+    return ret == nil ? @"" : ret;
+}
+
+- (NSString *)extensionFromUti: (NSString*)uti {
+    if (uti == nil) {
+        return nil;
+    }
+    CFStringRef cret = UTTypeCopyPreferredTagWithClass((__bridge CFStringRef)uti, kUTTagClassFilenameExtension);
+    return (__bridge_transfer NSString *)cret;
 }
 
 @end

@@ -25,22 +25,19 @@
 		<key>NSExtensionAttributes</key>
 		<dict>
 			<key>NSExtensionActivationRule</key>
-			<!-- string>TRUEPREDICATE</string -->
-      <dict>
-        <key>NSExtensionActivationSupportsImageWithMaxCount</key>
-        <integer>1</integer>
-        <!-- key>NSExtensionActivationSupportsMovieWithMaxCount</key>
-        <integer>1</integer -->
-        <!-- key>NSExtensionActivationSupportsWebURLWithMaxCount</key>
-        <integer>1</integer -->
-      </dict>
-      <key>NSExtensionActivationUsesStrictMatching</key>
-      <integer>1</integer>
-      <key>NSExtensionActivationDictionaryVersion</key>
-      <integer>2</integer>
+			<!-- Every attachment has to conform to the uniform type identifier -->
+			<string>
+				SUBQUERY(
+					extensionItems, $extensionItem,
+					SUBQUERY(
+						$extensionItem.attachments, $attachment,
+						ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "__UNIFORM_TYPE_IDENTIFIER__"
+					).@count == $extensionItem.attachments.@count
+				).@count == 1
+			</string>
 		</dict>
-		<key>NSExtensionMainStoryboard</key>
-		<string>MainInterface</string>
+		<key>NSExtensionPrincipalClass</key>
+		<string>ShareViewController</string>
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.share-services</string>
 	</dict>
