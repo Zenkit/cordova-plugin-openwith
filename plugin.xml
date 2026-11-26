@@ -32,6 +32,7 @@ SOFTWARE.
 	<description>Cordova "Open With" plugin for iOS and Android</description>
     <engines>
         <engine name="cordova" version=">=6.0.0" />
+        <engine name="cordova-ios" version=">=7.0.0" />
     </engines>
     <repo>https://github.com/zenkit/cordova-plugin-openwith.git</repo>
     <issue>https://github.com/zenkit/cordova-plugin-openwith/issues</issue>
@@ -78,11 +79,8 @@ SOFTWARE.
             </array>
         </config-file>
 
-        <hook type="before_plugin_install" src="hooks/npmInstall.js" />
-        <hook type="after_plugin_install" src="hooks/iosCopyShareExtension.js" />
-        <hook type="before_prepare" src="hooks/iosCopyShareExtension.js" />
-        <hook type="after_prepare" src="hooks/iosAddTarget.js" />
-        <hook type="before_plugin_uninstall" src="hooks/iosRemoveTarget.js" />
+        <hook type="after_prepare" src="hooks/ios/prepare-extension.js" />
+        <hook type="before_plugin_uninstall" src="hooks/ios/remove-extension.js" />
 
         <framework src="MobileCoreServices.framework" />
     </platform>

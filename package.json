@@ -28,10 +28,8 @@
   "homepage": "https://github.com/zenkit/cordova-plugin-openwith",
   "# Dependencies required by the hooks": "",
   "dependencies": {
-    "file-system": "^2.2.2",
-    "path": "^0.12.7",
-    "plist": "^2.1.0",
-    "xcode": "git+https://github.com/apache/cordova-node-xcode.git"
+    "fs-extra": "^11.1.1",
+    "plist": "^3.0.1"
   },
   "# White list the files to pack by npm publish": "",
   "files": [
