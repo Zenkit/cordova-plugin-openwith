@@ -3,50 +3,6 @@
 #import <MobileCoreServices/MobileCoreServices.h>
 
 /*
- * Add base64 export to NSData
- */
-@interface NSData (Base64)
-- (NSString*)convertToBase64;
-@end
-
-@implementation NSData (Base64)
-- (NSString*)convertToBase64 {
-    const uint8_t* input = (const uint8_t*)[self bytes];
-    NSInteger length = [self length];
-
-    static char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
-
-    NSMutableData* data = [NSMutableData dataWithLength:((length + 2) / 3) * 4];
-    uint8_t* output = (uint8_t*)data.mutableBytes;
-
-    NSInteger i;
-    for (i=0; i < length; i += 3) {
-        NSInteger value = 0;
-        NSInteger j;
-        for (j = i; j < (i + 3); j++) {
-            value <<= 8;
-
-            if (j < length) {
-                value |= (0xFF & input[j]);
-            }
-        }
-
-        NSInteger theIndex = (i / 3) * 4;
-        output[theIndex + 0] =                    table[(value >> 18) & 0x3F];
-        output[theIndex + 1] =                    table[(value >> 12) & 0x3F];
-        output[theIndex + 2] = (i + 1) < length ? table[(value >> 6)  & 0x3F] : '=';
-        output[theIndex + 3] = (i + 2) < length ? table[(value >> 0)  & 0x3F] : '=';
-    }
-
-    NSString *ret = [[NSString alloc] initWithData:data encoding:NSASCIIStringEncoding];
-#if ARC_DISABLED
-    [ret autorelease];
-#endif
-    return ret;
-}
-@end
-
-/*
  * Constants
  */
 
@@ -160,6 +116,7 @@ static NSDictionary* launchOptions = nil;
     // [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(viewDidLayoutSubviews:) name:CDVViewDidLayoutSubviewsNotification object:nil];
     // [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(viewWillTransitionToSize:) name:CDVViewWillTransitionToSizeNotification object:nil];
     [self onReset];
+    [self removeStaleSharedFiles];
     [self info:@"[pluginInitialize] OK"];
 }
 
@@ -211,15 +168,6 @@ static NSDictionary* launchOptions = nil;
     [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
 }
 
-- (NSString *)mimeTypeFromUti: (NSString*)uti {
-    if (uti == nil) {
-        return nil;
-    }
-    CFStringRef cret = UTTypeCopyPreferredTagWithClass((__bridge CFStringRef)uti, kUTTagClassMIMEType);
-    NSString *ret = (__bridge_transfer NSString *)cret;
-    return ret == nil ? uti : ret;
-}
-
 - (void) checkForFileToShare {
     [self debug:@"[checkForFileToShare]"];
     if (self.handlerCallback == nil) {
@@ -228,14 +176,14 @@ static NSDictionary* launchOptions = nil;
     }
 
     [self.userDefaults synchronize];
-    NSObject *object = [self.userDefaults objectForKey:@"image"];
+    NSObject *object = [self.userDefaults objectForKey:@"shared"];
     if (object == nil) {
         [self debug:@"[checkForFileToShare] Nothing to share"];
         return;
     }
 
     // Clean-up the object, assume it's been handled from now, prevent double processing
-    [self.userDefaults removeObjectForKey:@"image"];
+    [self.userDefaults removeObjectForKey:@"shared"];
 
     // Extract sharing data, make sure that it is valid
     if (![object isKindOfClass:[NSDictionary class]]) {
@@ -243,63 +191,58 @@ static NSDictionary* launchOptions = nil;
         return;
     }
     NSDictionary *dict = (NSDictionary*)object;
-    NSString *text = dict[@"text"];
-    NSString *name = dict[@"name"];
-    self.backURL = dict[@"backURL"];
-    NSString *type = [self mimeTypeFromUti:dict[@"uti"]];
-
-    // Prefer the spooled file path written by ShareViewController.m. Fall
-    // back to inline @"data" for backwards compatibility with older
-    // ShareExt builds and for the small-payload path. See #79.
-    NSData *data = nil;
-    NSString *dataPath = dict[@"dataPath"];
-    if ([dataPath isKindOfClass:NSString.class] && dataPath.length > 0) {
-        NSURL *fileURL = [NSURL fileURLWithPath:dataPath];
-        NSError *readError = nil;
-        data = [NSData dataWithContentsOfURL:fileURL options:0 error:&readError];
-        if (data == nil) {
-            [self debug:[NSString stringWithFormat:@"[checkForFileToShare] Failed to read spooled payload: %@", readError]];
-        }
-        // Clean up the spooled file regardless of read success so we
-        // don't leak files in the shared container.
-        [[NSFileManager defaultManager] removeItemAtURL:fileURL error:nil];
-    } else {
-        data = dict[@"data"];
-    }
-
-    if (![data isKindOfClass:NSData.class] || ![text isKindOfClass:NSString.class]) {
+    NSArray *items = dict[@"items"];
+    if (![items isKindOfClass:NSArray.class]) {
         [self debug:@"[checkForFileToShare] Data content is invalid"];
         return;
     }
-    NSArray *utis = dict[@"utis"];
-    if (utis == nil) {
-        utis = @[];
-    }
-
-    // TODO: add the backURL to the shared intent, put it aside in the plugin
-    // TODO: implement cordova.openwith.exit(intent), will check if backURL is set
 
     // Send to javascript
-    [self debug:[NSString stringWithFormat:
-        @"[checkForFileToShare] Sharing text \"%@\" and a %d bytes image",
-        text, data.length]];
+    [self debug:[NSString stringWithFormat:@"[checkForFileToShare] Sharing %lu items", (unsigned long)items.count]];
 
-    NSString *uri = [NSString stringWithFormat: @"shareextension://index=0,name=%@,type=%@",
-        name, type];
+    // NOTE: Files are referenced by their file:// uri in the App Group container,
+    // they are removed with removeStaleSharedFiles.
     CDVPluginResult* pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:@{
         @"action": @"SEND",
         @"exit": @YES,
-        @"items": @[@{
-            @"text" : text,
-            @"base64": [data convertToBase64],
-            @"type": type,
-            @"utis": utis,
-            @"uri": uri,
-            @"name": name
-        }]
+        @"items": items
     }];
     pluginResult.keepCallback = [NSNumber numberWithBool:YES];
     [self.commandDelegate sendPluginResult:pluginResult callbackId:self.handlerCallback];
+}
+
+// Remove the directories of earlier shares from the App Group container.
+//
+// The app might still read the files of a share it received in this process,
+// so this only runs on launch. Shares that weren't handled yet are kept and
+// recent directories are skipped, the extension might still be writing to them.
+- (void) removeStaleSharedFiles {
+    if ([self.userDefaults objectForKey:@"shared"] != nil) {
+        [self debug:@"[removeStaleSharedFiles] Share pending, skipping"];
+        return;
+    }
+
+    NSURL *containerURL = [[NSFileManager defaultManager] containerURLForSecurityApplicationGroupIdentifier:SHAREEXT_GROUP_IDENTIFIER];
+    if (containerURL == nil) {
+        return;
+    }
+    NSURL *directory = [containerURL URLByAppendingPathComponent:SHAREEXT_SHARED_DIRECTORY isDirectory:YES];
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSFileManager *fileManager = [[NSFileManager alloc] init];
+        NSArray<NSURL*> *shares = [fileManager contentsOfDirectoryAtURL:directory
+                                             includingPropertiesForKeys:@[NSURLCreationDateKey]
+                                                                options:NSDirectoryEnumerationSkipsHiddenFiles
+                                                                  error:nil];
+        NSDate *threshold = [NSDate dateWithTimeIntervalSinceNow:-60 * 60];
+        for (NSURL *share in shares) {
+            NSDate *creationDate = nil;
+            [share getResourceValue:&creationDate forKey:NSURLCreationDateKey error:nil];
+            if (creationDate != nil && [creationDate compare:threshold] == NSOrderedAscending) {
+                [fileManager removeItemAtURL:share error:nil];
+            }
+        }
+    });
 }
 
 // Initialize the plugin
@@ -313,7 +256,7 @@ static NSDictionary* launchOptions = nil;
 // Load data from URL
 - (void) load:(CDVInvokedUrlCommand*)command {
     [self debug:@"[load]"];
-    // Base64 data already loaded, so this shouldn't happen
+    // The shared files are referenced by their uri, so this shouldn't happen
     // the function is defined just to prevent crashes from unexpected client behaviours.
     CDVPluginResult* pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Load, it shouldn't have been!"];
     [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
