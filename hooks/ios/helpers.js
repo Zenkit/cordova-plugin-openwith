@@ -12,19 +12,23 @@ class PluginError extends Error {
     }
 }
 
-// NOTE: Use the cordova-ios of the project, it is the one the platform was created and prepared with.
-// It also caches the parsed project, so the changes of the platform and the hooks don't overwrite each other.
-function requireProjectFile({ ctx }) {
-    try {
-        return require(require.resolve('cordova-ios/lib/projectFile', { paths: [ctx.opts.projectRoot] }));
-    } catch (error) {
-        return ctx.requireCordovaModule('cordova-ios/lib/projectFile');
+// NOTE: Use the cordova-ios instance cordova uses for the platform, it caches the parsed project.
+// With another instance (e.g. a second copy of cordova-ios in the project) the platform writes its
+// cached project after our hook and the share extension is gone.
+function requireProjectFile({ ctx, root }) {
+    const { cordova_platforms: platforms } = ctx.requireCordovaModule('cordova-lib');
+    const api = platforms.getPlatformApi('ios', root);
+    const apiModule = Object.values(require.cache).find(module => module.exports === api.constructor);
+    if (!apiModule) {
+        throw new PluginError("Couldn't find the cordova-ios module of the platform");
     }
+
+    return require(path.join(path.dirname(apiModule.filename), 'projectFile'));
 }
 
 async function getXcodeProject({ ctx }) {
-    const { parse } = requireProjectFile({ ctx });
     const root = path.join(ctx.opts.projectRoot, 'platforms', 'ios');
+    const { parse } = requireProjectFile({ ctx, root });
 
     const files = await fs.readdir(root);
     const xcodeproj = files.find(file => path.extname(file) === '.xcodeproj');
