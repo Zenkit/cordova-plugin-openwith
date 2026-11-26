@@ -209,11 +209,22 @@ public class OpenWithPlugin extends CordovaPlugin {
     @Override
     public void onNewIntent(final Intent intent) {
         log(DEBUG, "onNewIntent() " + intent.getAction());
-        final JSONObject json = toJSONObject(intent);
-        if (json != null) {
-            pendingIntents.add(json);
+        if (isShareIntent(intent)) {
+            final JSONObject json = toJSONObject(intent);
+            if (json != null) {
+                pendingIntents.add(json);
+            }
         }
         processPendingIntents();
+    }
+
+    /**
+     * Only share intents are handled, other intents (e.g. VIEW intents for deep links)
+     * are left to the app.
+     */
+    private boolean isShareIntent(final Intent intent) {
+        final String action = intent.getAction();
+        return Intent.ACTION_SEND.equals(action) || Intent.ACTION_SEND_MULTIPLE.equals(action);
     }
 
     /**
@@ -245,7 +256,8 @@ public class OpenWithPlugin extends CordovaPlugin {
             final ContentResolver contentResolver = this.cordova
                 .getActivity().getApplicationContext().getContentResolver();
             return Serializer.toJSONObject(contentResolver, intent);
-        } catch (JSONException e) {
+        } catch (JSONException | RuntimeException e) {
+            // NOTE: The intent comes from another app, don't crash on unexpected extras.
             log(ERROR, "Error converting intent to JSON: " + e.getMessage());
             log(ERROR, Arrays.toString(e.getStackTrace()));
             return null;

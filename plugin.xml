@@ -103,9 +103,9 @@ SOFTWARE.
                 <!-- See https://developer.android.com/guide/topics/manifest/data-element.html -->
                 <data android:mimeType="$ANDROID_MIME_TYPE" />
                 <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
                 $ANDROID_EXTRA_ACTIONS
                 <!-- action android:name="android.intent.action.VIEW" / -->
-                <!-- action android:name="android.intent.action.SEND_MULTIPLE" / -->
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </config-file>

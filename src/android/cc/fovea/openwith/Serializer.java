@@ -5,12 +5,17 @@ import android.content.ContentResolver;
 import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
-import android.os.Build;
 import android.os.Bundle;
+import android.os.Parcelable;
 import android.provider.MediaStore;
+import android.provider.OpenableColumns;
+import android.text.TextUtils;
 import android.util.Base64;
+import android.webkit.MimeTypeMap;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.Locale;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -20,27 +25,24 @@ import org.json.JSONObject;
  */
 class Serializer {
 
-    /** Convert an intent to JSON.
+    /** Convert a SEND or SEND_MULTIPLE intent to JSON.
      *
-     * This actually only exports stuff necessary to see file content
-     * (streams or clip data) sent with the intent.
-     * If none are specified, null is return.
+     * Items are read from the extras first (texts and streams), then from the
+     * clip data and finally from the intent's data.
+     * If no items are found, null is returned.
      */
     public static JSONObject toJSONObject(
             final ContentResolver contentResolver,
             final Intent intent)
             throws JSONException {
-        JSONArray items = null;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+        JSONArray items = itemsFromExtras(contentResolver, intent);
+        if (items.length() == 0) {
             items = itemsFromClipData(contentResolver, intent.getClipData());
         }
-        if (items == null || items.length() == 0) {
-            items = itemsFromExtras(contentResolver, intent.getExtras());
-        }
-        if (items == null || items.length() == 0) {
+        if (items.length() == 0) {
             items = itemsFromData(contentResolver, intent.getData());
         }
-        if (items == null) {
+        if (items.length() == 0) {
             return null;
         }
         final JSONObject action = new JSONObject();
@@ -70,43 +72,70 @@ class Serializer {
         return extras.getBoolean("exit_on_sent", false);
     }
 
-    /** Extract the list of items from clip data (if available).
+    /** Extract the list of items from the intent's extras.
      *
-     * Defaults to null. */
+     * EXTRA_SUBJECT and EXTRA_TEXT are joined into one text item,
+     * every EXTRA_STREAM uri becomes a file item.
+     * The extras are read first because e.g. Chrome also puts the shared
+     * text into the clip data. */
+    @SuppressWarnings("deprecation")
+    public static JSONArray itemsFromExtras(
+            final ContentResolver contentResolver,
+            final Intent intent)
+            throws JSONException {
+        final JSONArray items = new JSONArray();
+
+        final ArrayList<String> texts = new ArrayList<String>();
+        addText(texts, intent.getCharSequenceExtra(Intent.EXTRA_SUBJECT));
+        addText(texts, intent.getCharSequenceExtra(Intent.EXTRA_TEXT));
+        if (!texts.isEmpty()) {
+            items.put(textItem(TextUtils.join("\n", texts)));
+        }
+
+        final ArrayList<Parcelable> streams = new ArrayList<Parcelable>();
+        if (Intent.ACTION_SEND_MULTIPLE.equals(intent.getAction())) {
+            final ArrayList<Parcelable> extras = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+            if (extras != null) {
+                streams.addAll(extras);
+            }
+        } else {
+            streams.add(intent.getParcelableExtra(Intent.EXTRA_STREAM));
+        }
+        for (final Parcelable stream : streams) {
+            if (stream instanceof Uri) {
+                items.put(toJSONObject(contentResolver, (Uri) stream));
+            }
+        }
+
+        return items;
+    }
+
+    private static void addText(final ArrayList<String> texts, final CharSequence text) {
+        if (text != null && text.length() > 0) {
+            texts.add(text.toString());
+        }
+    }
+
+    /** Extract the list of items from clip data (if available). */
     public static JSONArray itemsFromClipData(
             final ContentResolver contentResolver,
             final ClipData clipData)
             throws JSONException {
-        if (clipData != null) {
-            final int clipItemCount = clipData.getItemCount();
-            JSONObject[] items = new JSONObject[clipItemCount];
-            for (int i = 0; i < clipItemCount; i++) {
-                items[i] = toJSONObject(contentResolver, clipData.getItemAt(i).getUri());
+        final JSONArray items = new JSONArray();
+        if (clipData == null) {
+            return items;
+        }
+        for (int i = 0; i < clipData.getItemCount(); i++) {
+            final ClipData.Item clipItem = clipData.getItemAt(i);
+            final CharSequence text = clipItem.getText();
+            final Uri uri = clipItem.getUri();
+            if (text != null && text.length() > 0) {
+                items.put(textItem(text.toString()));
+            } else if (uri != null) {
+                items.put(toJSONObject(contentResolver, uri));
             }
-            return new JSONArray(items);
         }
-        return null;
-    }
-
-    /** Extract the list of items from the intent's extra stream.
-     *
-     * See Intent.EXTRA_STREAM for details. */
-    public static JSONArray itemsFromExtras(
-            final ContentResolver contentResolver,
-            final Bundle extras)
-            throws JSONException {
-        if (extras == null) {
-            return null;
-        }
-        final JSONObject item = toJSONObject(
-                contentResolver,
-                (Uri) extras.get(Intent.EXTRA_STREAM));
-        if (item == null) {
-            return null;
-        }
-        final JSONObject[] items = new JSONObject[1];
-        items[0] = item;
-        return new JSONArray(items);
+        return items;
     }
 
     /** Extract the list of items from the intent's getData
@@ -116,41 +145,94 @@ class Serializer {
             final ContentResolver contentResolver,
             final Uri uri)
             throws JSONException {
-        if (uri == null) {
-            return null;
+        final JSONArray items = new JSONArray();
+        if (uri != null) {
+            items.put(toJSONObject(contentResolver, uri));
         }
-        final JSONObject item = toJSONObject(
-                contentResolver,
-                uri);
-        if (item == null) {
-            return null;
-        }
-        final JSONObject[] items = new JSONObject[1];
-        items[0] = item;
-        return new JSONArray(items);
+        return items;
+    }
+
+    private static JSONObject textItem(final String text) throws JSONException {
+        final JSONObject json = new JSONObject();
+        json.put("text", text);
+        return json;
     }
 
     /** Convert an Uri to JSON object.
      *
      * Object will include:
-     *    "type" of data;
      *    "uri" itself;
-     *    "path" to the file, if applicable.
-     *    "data" for the file.
+     *    "type" the mime type of the file;
+     *    "name" the display name of the file.
      */
     public static JSONObject toJSONObject(
             final ContentResolver contentResolver,
             final Uri uri)
             throws JSONException {
-        if (uri == null) {
+        final JSONObject json = new JSONObject();
+        json.put("uri", uri.toString());
+        json.put("type", getMimeType(contentResolver, uri));
+        json.put("name", getDisplayName(contentResolver, uri));
+        return json;
+    }
+
+    private static String getDisplayName(final ContentResolver contentResolver, final Uri uri) {
+        if (ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) {
+            return queryColumn(contentResolver, uri, OpenableColumns.DISPLAY_NAME);
+        }
+        return uri.getLastPathSegment();
+    }
+
+    private static String getMimeType(final ContentResolver contentResolver, final Uri uri) {
+        if (ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) {
+            // NOTE: Prefer the type MediaStore detected for the file
+            // over the type the providing app declared.
+            final String type = queryColumn(contentResolver, uri, MediaStore.MediaColumns.MIME_TYPE);
+            if (type != null) {
+                return type;
+            }
+            try {
+                final String resolverType = contentResolver.getType(uri);
+                if (resolverType != null) {
+                    return resolverType;
+                }
+            } catch (RuntimeException e) {
+                // Fall back to the file extension
+            }
+        }
+        final String extension = MimeTypeMap.getFileExtensionFromUrl(uri.toString());
+        if (extension == null || extension.isEmpty()) {
             return null;
         }
-        final JSONObject json = new JSONObject();
-        final String type = contentResolver.getType(uri);
-        json.put("type", type);
-        json.put("uri", uri);
-        json.put("path", getRealPathFromURI(contentResolver, uri));
-        return json;
+        return MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension.toLowerCase(Locale.ROOT));
+    }
+
+    /** Query a single string column of a content uri. Defaults to null.
+     *
+     * Providers don't have to support every column (e.g. FileProvider only
+     * knows the OpenableColumns) and some throw for unknown ones. */
+    private static String queryColumn(
+            final ContentResolver contentResolver,
+            final Uri uri,
+            final String column) {
+        Cursor cursor = null;
+        try {
+            cursor = contentResolver.query(uri, new String[] { column }, null, null, null);
+            if (cursor == null || !cursor.moveToFirst()) {
+                return null;
+            }
+            final int index = cursor.getColumnIndex(column);
+            if (index < 0) {
+                return null;
+            }
+            return cursor.getString(index);
+        } catch (RuntimeException e) {
+            return null;
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
     }
 
     /** Return data contained at a given Uri as Base64. Defaults to null. */
@@ -166,27 +248,5 @@ class Serializer {
             return "";
         }
     }
-
-	/** Convert the Uri to the direct file system path of the image file.
-     *
-     * source: https://stackoverflow.com/questions/20067508/get-real-path-from-uri-android-kitkat-new-storage-access-framework/20402190?noredirect=1#comment30507493_20402190 */
-	public static String getRealPathFromURI(
-            final ContentResolver contentResolver,
-            final Uri uri) {
-		final String[] proj = { MediaStore.Images.Media.DATA };
-		final Cursor cursor = contentResolver.query(uri, proj, null, null, null);
-		if (cursor == null) {
-			return "";
-		}
-		final int column_index = cursor.getColumnIndex(MediaStore.Images.Media.DATA);
-		if (column_index < 0) {
-			cursor.close();
-			return "";
-		}
-		cursor.moveToFirst();
-		final String result = cursor.getString(column_index);
-		cursor.close();
-		return result;
-	}
 }
 // vim: ts=4:sw=4:et
