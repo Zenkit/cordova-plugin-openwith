@@ -6,6 +6,20 @@
 
 > This plugin for [Apache Cordova](https://cordova.apache.org/) registers your app to handle certain types of files.
 
+## Zenkit fork
+
+This is the [Zenkit](https://zenkit.com) fork, published as `@zenkit-dev/cordova-plugin-openwith`.
+It differs from the documentation below in these points:
+
+- Texts, URLs and any number of files are shared, the iOS share extension has no Post dialog.
+- Items have `text` (texts and URLs) or `uri`, `name` and `type` (files). There is no `base64` or `path`, `load()` only works on Android.
+  - On iOS `uri` is a `file://` uri of a copy in the App Group container. Copies are removed on the next app launch.
+  - On Android `uri` is the shared `content://` uri.
+- Android handles `SEND` and `SEND_MULTIPLE`, `VIEW` intents are ignored.
+- iOS needs cordova-ios 7 or later. The App Group is `group.<bundle id>.shareextension`, the bundle id is read from the Xcode project.
+  `IOS_GROUP_IDENTIFIER`, `SHAREEXT_PROVISIONING_PROFILE` and `SHAREEXT_DEVELOPMENT_TEAM` aren't supported,
+  the extension uses the signing settings of the build config (`build.json`).
+
 ## Overview
 
 You'd like your app to be listed in the **Send to...** section for certain types of files, on both **Android** and **iOS**? This is THE plugin! No need to meddle into Android's manifests and iOS's plist files, it's (almost) all managed for you by a no brainer one liner installation command.
